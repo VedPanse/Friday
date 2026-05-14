@@ -473,6 +473,7 @@ private struct BrowserIsland: View {
     let session: FridayBrowserSession
     let closeBrowser: () -> Void
 
+    @State private var addressText = ""
     @State private var isCloseHovered = false
     @State private var isReloadHovered = false
 
@@ -495,12 +496,24 @@ private struct BrowserIsland: View {
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.white.opacity(0.82))
 
-                Text(session.displayHost)
+                TextField("Enter URL", text: $addressText)
+                    .textFieldStyle(.plain)
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(.white.opacity(0.76))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .tint(.white)
                     .lineLimit(1)
+                    .onSubmit(navigateFromAddressBar)
+                    .onAppear(perform: syncAddressText)
+                    .onChange(of: session.visibleURL) { _, _ in syncAddressText() }
+                    .onChange(of: session.requestedURL) { _, _ in syncAddressText() }
 
                 Spacer()
+
+                if session.isLoading {
+                    Text("Loading")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.44))
+                }
 
                 Button(action: session.reload) {
                     Image(systemName: "arrow.clockwise")
@@ -526,8 +539,19 @@ private struct BrowserIsland: View {
                 }
         }
         .padding(Layout.browserPanelPadding)
-        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+        .frame(width: Layout.browserPanelWidth, height: Layout.panelHeight)
         .glassSurface(cornerRadius: Layout.panelCornerRadius)
+    }
+
+    private func syncAddressText() {
+        let url = session.visibleURL ?? session.requestedURL
+        guard addressText != url.absoluteString else { return }
+        addressText = url.absoluteString
+    }
+
+    private func navigateFromAddressBar() {
+        guard let url = FridayBrowserURLParser.url(from: addressText) else { return }
+        session.navigate(to: url, userRequest: "Manual URL entry")
     }
 }
 
@@ -623,14 +647,16 @@ private struct FridayWebView: NSViewRepresentable {
         webView.allowsBackForwardNavigationGestures = true
         webView.setValue(false, forKey: "drawsBackground")
         session.attach(webView)
-        webView.load(URLRequest(url: session.url))
+        context.coordinator.lastLoadedRequestID = session.requestID
+        webView.load(URLRequest(url: session.requestedURL))
         return webView
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
         session.attach(webView)
-        guard webView.url != session.url else { return }
-        webView.load(URLRequest(url: session.url))
+        guard context.coordinator.lastLoadedRequestID != session.requestID else { return }
+        context.coordinator.lastLoadedRequestID = session.requestID
+        webView.load(URLRequest(url: session.requestedURL))
     }
 
     func makeCoordinator() -> Coordinator {
@@ -639,13 +665,32 @@ private struct FridayWebView: NSViewRepresentable {
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         let session: FridayBrowserSession
+        var lastLoadedRequestID: UUID?
 
         init(session: FridayBrowserSession) {
             self.session = session
         }
 
+        func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+            session.setLoading(true)
+            session.updateVisibleURL(webView.url)
+        }
+
+        func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
+            session.updateVisibleURL(webView.url)
+        }
+
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            session.updateCurrentURL(webView.url)
+            session.updateVisibleURL(webView.url)
+            session.setLoading(false)
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+            session.setLoading(false)
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+            session.setLoading(false)
         }
     }
 }
@@ -983,6 +1028,11 @@ private final class FridayPanelChatViewModel: ObservableObject {
             return
         }
 
+        if let browserSession {
+            performBrowserAgentTask(trimmedPrompt, in: browserSession)
+            return
+        }
+
         isResponding = true
         modelStatusText = "Thinking"
 
@@ -1033,16 +1083,21 @@ private final class FridayPanelChatViewModel: ObservableObject {
     private func openBrowser(for request: FridayBrowserRequest) {
         if let existingSession = browserSession {
             existingSession.navigate(to: request.url, userRequest: request.originalText)
+            messages.append(
+                FridayPanelChatMessage(
+                    role: .friday,
+                    text: "Navigating the main glass to \(request.displayName). I’ll update the browser header from the page that actually loads."
+                )
+            )
         } else {
             browserSession = FridayBrowserSession(url: request.url, userRequest: request.originalText)
-        }
-
-        messages.append(
-            FridayPanelChatMessage(
-                role: .friday,
-                text: "I opened \(request.displayName) in the main glass. I can help you navigate it here. For purchases, orders, payments, or anything externally visible, I’ll ask you to confirm before the final action."
+            messages.append(
+                FridayPanelChatMessage(
+                    role: .friday,
+                    text: "I opened \(request.displayName) in the main glass. I can help you navigate it here. For purchases, orders, payments, or anything externally visible, I’ll ask you to confirm before the final action."
+                )
             )
-        )
+        }
         modelStatusText = "Browser"
     }
 
@@ -1053,6 +1108,20 @@ private final class FridayPanelChatViewModel: ObservableObject {
             let result = await session.perform(command)
             messages.append(FridayPanelChatMessage(role: .friday, text: result.message))
             modelStatusText = "Browser"
+        }
+    }
+
+    private func performBrowserAgentTask(_ task: String, in session: FridayBrowserSession) {
+        isResponding = true
+        modelStatusText = "Browser agent"
+
+        let settings = store.snapshot().settings
+
+        Task {
+            let result = await FridayBrowserAgent(settings: settings).run(task: task, session: session)
+            messages.append(FridayPanelChatMessage(role: .friday, text: result.message))
+            isResponding = false
+            modelStatusText = result.didNeedConfirmation ? "Needs confirmation" : "Browser"
         }
     }
 
@@ -1324,18 +1393,23 @@ private nonisolated enum FridayPanelChatRole: Equatable {
 @MainActor
 private final class FridayBrowserSession: ObservableObject, Identifiable {
     let id = UUID()
-    @Published private(set) var url: URL
+    @Published private(set) var requestedURL: URL
+    @Published private(set) var visibleURL: URL?
     @Published private(set) var userRequest: String
+    @Published private(set) var requestID = UUID()
+    @Published private(set) var isLoading = false
 
     private weak var webView: WKWebView?
 
     init(url: URL, userRequest: String) {
-        self.url = url
+        self.requestedURL = url
+        self.visibleURL = url
         self.userRequest = userRequest
     }
 
     var displayHost: String {
-        url.host(percentEncoded: false) ?? url.absoluteString
+        let url = visibleURL ?? requestedURL
+        return url.host(percentEncoded: false) ?? url.absoluteString
     }
 
     func attach(_ webView: WKWebView) {
@@ -1343,8 +1417,10 @@ private final class FridayBrowserSession: ObservableObject, Identifiable {
     }
 
     func navigate(to url: URL, userRequest: String) {
-        self.url = url
+        self.requestedURL = url
         self.userRequest = userRequest
+        self.requestID = UUID()
+        self.isLoading = true
         webView?.load(URLRequest(url: url))
     }
 
@@ -1352,9 +1428,13 @@ private final class FridayBrowserSession: ObservableObject, Identifiable {
         webView?.reload()
     }
 
-    func updateCurrentURL(_ url: URL?) {
-        guard let url, self.url != url else { return }
-        self.url = url
+    func updateVisibleURL(_ url: URL?) {
+        guard let url, visibleURL != url else { return }
+        visibleURL = url
+    }
+
+    func setLoading(_ isLoading: Bool) {
+        self.isLoading = isLoading
     }
 
     func perform(_ command: FridayBrowserCommand) async -> FridayBrowserCommandResult {
@@ -1374,7 +1454,47 @@ private final class FridayBrowserSession: ObservableObject, Identifiable {
         }
     }
 
+    func pageSnapshot() async -> FridayBrowserPageSnapshot {
+        guard webView != nil else {
+            return FridayBrowserPageSnapshot(url: visibleURL ?? requestedURL, title: "", text: "", controls: [])
+        }
+
+        do {
+            let value = try await evaluateJavaScript(Self.pageSnapshotJavaScript)
+            guard let object = value as? [String: Any] else {
+                return FridayBrowserPageSnapshot(url: visibleURL ?? requestedURL, title: "", text: "", controls: [])
+            }
+
+            let controls = (object["controls"] as? [[String: Any]] ?? []).compactMap { item -> FridayBrowserPageControl? in
+                guard let label = item["label"] as? String, !label.isEmpty else { return nil }
+                return FridayBrowserPageControl(
+                    index: item["index"] as? Int ?? 0,
+                    kind: item["kind"] as? String ?? "control",
+                    label: label.prefixString(120)
+                )
+            }
+
+            return FridayBrowserPageSnapshot(
+                url: visibleURL ?? requestedURL,
+                title: object["title"] as? String ?? "",
+                text: (object["text"] as? String ?? "").prefixString(1800),
+                controls: controls
+            )
+        } catch {
+            return FridayBrowserPageSnapshot(url: visibleURL ?? requestedURL, title: "", text: "", controls: [])
+        }
+    }
+
+    func waitForPageSettled() async {
+        try? await Task.sleep(for: .milliseconds(900))
+    }
+
     private func evaluateBooleanJavaScript(_ javaScript: String) async throws -> Bool {
+        let value = try await evaluateJavaScript(javaScript)
+        return (value as? Bool) == true
+    }
+
+    private func evaluateJavaScript(_ javaScript: String) async throws -> Any? {
         guard let webView else { return false }
 
         return try await withCheckedThrowingContinuation { continuation in
@@ -1384,18 +1504,289 @@ private final class FridayBrowserSession: ObservableObject, Identifiable {
                     return
                 }
 
-                continuation.resume(returning: (value as? Bool) == true)
+                continuation.resume(returning: value)
             }
         }
     }
+
+    private static let pageSnapshotJavaScript = """
+    (() => {
+      const visible = (element) => {
+        const rect = element.getBoundingClientRect();
+        const style = window.getComputedStyle(element);
+        return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= window.innerHeight && style.visibility !== 'hidden' && style.display !== 'none';
+      };
+      const clean = (value) => (value || '').replace(/\\s+/g, ' ').trim();
+      const label = (element) => clean([
+        element.innerText,
+        element.value,
+        element.getAttribute('aria-label'),
+        element.getAttribute('title'),
+        element.getAttribute('placeholder'),
+        element.name,
+        element.id
+      ].filter(Boolean).join(' '));
+      const nodes = Array.from(document.querySelectorAll('a, button, [role="button"], input, textarea, select, summary, [onclick]'));
+      const controls = nodes
+        .filter(visible)
+        .map((element, index) => ({
+          index,
+          kind: (element.tagName || '').toLowerCase() + (element.getAttribute('role') ? ':' + element.getAttribute('role') : ''),
+          label: label(element).slice(0, 160)
+        }))
+        .filter(item => item.label.length > 0)
+        .slice(0, 80);
+      return {
+        title: document.title || '',
+        text: clean(document.body ? document.body.innerText : '').slice(0, 2500),
+        controls
+      };
+    })();
+    """
 }
 
 private nonisolated struct FridayBrowserCommandResult: Equatable {
     let message: String
 }
 
+private nonisolated struct FridayBrowserPageSnapshot: Equatable {
+    let url: URL
+    let title: String
+    let text: String
+    let controls: [FridayBrowserPageControl]
+
+    var promptText: String {
+        """
+        URL: \(url.absoluteString)
+        Title: \(title)
+
+        Visible page text:
+        \(text)
+
+        Visible controls:
+        \(controls.prefix(60).map { "- [\($0.index)] \($0.kind): \($0.label)" }.joined(separator: "\n"))
+        """
+    }
+}
+
+private nonisolated struct FridayBrowserPageControl: Equatable {
+    let index: Int
+    let kind: String
+    let label: String
+}
+
+private struct FridayBrowserAgent {
+    let settings: FridayAssistantSettings
+
+    func run(task: String, session: FridayBrowserSession) async -> FridayBrowserAgentResult {
+        let apiKey = settings.apiKey.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            return FridayBrowserAgentResult(
+                message: "Add your OpenAI API key in Settings so I can operate the browser agentically. I can still follow direct commands like `click \"Add to Cart\"`.",
+                didNeedConfirmation: false
+            )
+        }
+
+        var actionLog: [String] = []
+
+        for _ in 0..<8 {
+            await session.waitForPageSettled()
+            let snapshot = await session.pageSnapshot()
+
+            guard let action = await nextAction(task: task, snapshot: snapshot, actionLog: actionLog, apiKey: apiKey) else {
+                return FridayBrowserAgentResult(
+                    message: "I could not decide the next browser step from the visible page. Try a more specific instruction, or tell me exactly what to click/type.",
+                    didNeedConfirmation: false
+                )
+            }
+
+            switch action.kind {
+            case .done:
+                return FridayBrowserAgentResult(
+                    message: action.message.isEmpty ? "Done." : action.message,
+                    didNeedConfirmation: false
+                )
+            case .needsConfirmation:
+                return FridayBrowserAgentResult(
+                    message: action.message.isEmpty ? "I’m at a step that needs your confirmation before I continue." : action.message,
+                    didNeedConfirmation: true
+                )
+            case .navigate:
+                guard let url = action.url else {
+                    actionLog.append("Navigate failed: missing URL")
+                    continue
+                }
+                await MainActor.run {
+                    session.navigate(to: url, userRequest: task)
+                }
+                actionLog.append("Navigated to \(url.absoluteString)")
+            case .click:
+                let command: FridayBrowserCommand
+                if let index = action.index {
+                    command = .clickIndex(index)
+                } else if let text = action.text, !text.isEmpty {
+                    command = .click(text)
+                } else {
+                    actionLog.append("Click failed: missing target")
+                    continue
+                }
+                let result = await session.perform(command)
+                actionLog.append(result.message)
+            case .type:
+                guard let text = action.text, !text.isEmpty else {
+                    actionLog.append("Type failed: missing text")
+                    continue
+                }
+                let result = await session.perform(.type(text))
+                actionLog.append(result.message)
+            case .search:
+                guard let text = action.text, !text.isEmpty else {
+                    actionLog.append("Search failed: missing text")
+                    continue
+                }
+                let result = await session.perform(.search(text))
+                actionLog.append(result.message)
+            case .pressEnter:
+                let result = await session.perform(.pressEnter)
+                actionLog.append(result.message)
+            }
+        }
+
+        return FridayBrowserAgentResult(
+            message: "I made progress, but I hit my step limit. Current actions: \(actionLog.suffix(4).joined(separator: " "))",
+            didNeedConfirmation: false
+        )
+    }
+
+    private func nextAction(
+        task: String,
+        snapshot: FridayBrowserPageSnapshot,
+        actionLog: [String],
+        apiKey: String
+    ) async -> FridayBrowserAgentAction? {
+        do {
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": settings.model,
+                "max_output_tokens": 320,
+                "instructions": instructions,
+                "input": """
+                User browser task:
+                \(task)
+
+                Page snapshot:
+                \(snapshot.promptText)
+
+                Actions already taken:
+                \(actionLog.suffix(10).joined(separator: "\n"))
+
+                Return exactly one JSON object.
+                """,
+            ] as [String: Any])
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                return nil
+            }
+
+            let text = OpenAIClient.extractText(from: data)
+            return FridayBrowserAgentAction.decode(from: text)
+        } catch {
+            return nil
+        }
+    }
+
+    private var instructions: String {
+        """
+        You are Friday's browser-control planner. Pick exactly one next browser action.
+        Use only the visible page snapshot. Do not claim success unless the page shows it.
+        Prefer control indexes when clicking because they are tied to the visible page.
+        You may help with shopping tasks, including searching products and adding items to cart.
+        You must stop and ask for confirmation before checkout, payment, placing an order, sending a message/email, deleting data, booking, or any irreversible/external final action.
+
+        Return exactly one JSON object with one of:
+        {"action":"click","index":12,"text":"optional label","message":"short progress note"}
+        {"action":"type","text":"text to type","message":"short progress note"}
+        {"action":"search","text":"query","message":"short progress note"}
+        {"action":"press_enter","message":"short progress note"}
+        {"action":"navigate","url":"https://example.com","message":"short progress note"}
+        {"action":"needs_confirmation","message":"Ask user to confirm the exact final action."}
+        {"action":"done","message":"Briefly say what is done and what is visible."}
+        """
+    }
+}
+
+private nonisolated struct FridayBrowserAgentResult: Equatable {
+    let message: String
+    let didNeedConfirmation: Bool
+}
+
+private nonisolated struct FridayBrowserAgentAction: Equatable {
+    let kind: Kind
+    let index: Int?
+    let text: String?
+    let url: URL?
+    let message: String
+
+    enum Kind: Equatable {
+        case click
+        case type
+        case search
+        case pressEnter
+        case navigate
+        case needsConfirmation
+        case done
+    }
+
+    static func decode(from text: String) -> FridayBrowserAgentAction? {
+        let jsonText = text
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            .strippingMarkdownCodeFence
+        guard
+            let data = jsonText.data(using: .utf8),
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let action = object["action"] as? String
+        else {
+            return nil
+        }
+
+        let kind: Kind
+        switch action {
+        case "click":
+            kind = .click
+        case "type":
+            kind = .type
+        case "search":
+            kind = .search
+        case "press_enter":
+            kind = .pressEnter
+        case "navigate":
+            kind = .navigate
+        case "needs_confirmation":
+            kind = .needsConfirmation
+        case "done":
+            kind = .done
+        default:
+            return nil
+        }
+
+        let url = (object["url"] as? String).flatMap(URL.init(string:))
+        return FridayBrowserAgentAction(
+            kind: kind,
+            index: object["index"] as? Int,
+            text: object["text"] as? String,
+            url: url,
+            message: object["message"] as? String ?? ""
+        )
+    }
+}
+
 private nonisolated enum FridayBrowserCommand: Equatable {
     case click(String)
+    case clickIndex(Int)
     case type(String)
     case search(String)
     case pressEnter
@@ -1422,6 +1813,24 @@ private nonisolated enum FridayBrowserCommand: Equatable {
               const element = candidates.find((candidate) => visible(candidate) && label(candidate).includes(needle));
               if (!element) { return false; }
               element.scrollIntoView({ block: 'center', inline: 'center' });
+              element.click();
+              return true;
+            })();
+            """
+        case .clickIndex(let index):
+            """
+            (() => {
+              const targetIndex = \(index);
+              const visible = (element) => {
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && rect.bottom >= 0 && rect.top <= window.innerHeight && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const nodes = Array.from(document.querySelectorAll('a, button, [role="button"], input, textarea, select, summary, [onclick]')).filter(visible);
+              const element = nodes[targetIndex];
+              if (!element) { return false; }
+              element.scrollIntoView({ block: 'center', inline: 'center' });
+              element.focus();
               element.click();
               return true;
             })();
@@ -1493,6 +1902,8 @@ private nonisolated enum FridayBrowserCommand: Equatable {
         switch self {
         case .click(let text):
             "I clicked “\(text)” on the page."
+        case .clickIndex(let index):
+            "I clicked control \(index) on the page."
         case .type(let text):
             "I typed “\(text)” into the active field."
         case .search(let text):
@@ -1506,6 +1917,8 @@ private nonisolated enum FridayBrowserCommand: Equatable {
         switch self {
         case .click(let text):
             "I could not find a visible clickable control matching “\(text)”."
+        case .clickIndex(let index):
+            "I could not find visible control \(index)."
         case .type:
             "I could not find a visible text field to type into."
         case .search:
@@ -1610,6 +2023,24 @@ private nonisolated struct FridayBrowserRequest: Equatable {
     }
 }
 
+private nonisolated enum FridayBrowserURLParser {
+    static func url(from text: String) -> URL? {
+        let trimmedText = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !trimmedText.isEmpty else { return nil }
+
+        if let url = URL(string: trimmedText), url.scheme != nil {
+            return url
+        }
+
+        if trimmedText.contains(".") && !trimmedText.contains(" ") {
+            return URL(string: "https://\(trimmedText)")
+        }
+
+        let query = trimmedText.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? trimmedText
+        return URL(string: "https://www.google.com/search?q=\(query)")
+    }
+}
+
 private nonisolated enum FridayBrowserRequestDetector {
     static func request(from text: String) -> FridayBrowserRequest? {
         let trimmedText = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
@@ -1675,7 +2106,7 @@ private nonisolated enum FridayBrowserRequestDetector {
             return domainURL(in: text)
         }
 
-        return url
+        return normalizedURL(url)
     }
 
     private static func domainURL(in text: String) -> URL? {
@@ -1689,11 +2120,19 @@ private nonisolated enum FridayBrowserRequestDetector {
         }
 
         let value = String(text[range])
-        return URL(string: value.hasPrefix("http") ? value : "https://\(value)")
+        return FridayBrowserURLParser.url(from: value)
     }
 
     private static func queryComponent(from text: String) -> String {
         text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
+    }
+
+    private static func normalizedURL(_ url: URL) -> URL {
+        if url.scheme == nil {
+            return FridayBrowserURLParser.url(from: url.absoluteString) ?? url
+        }
+
+        return url
     }
 }
 
@@ -3249,6 +3688,20 @@ private nonisolated extension String {
             .replacingOccurrences(of: "&apos;", with: "'")
             .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
+
+    var strippingMarkdownCodeFence: String {
+        let trimmed = trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard trimmed.hasPrefix("```") else { return trimmed }
+
+        let lines = trimmed.components(separatedBy: .newlines)
+        guard lines.count >= 3 else { return trimmed }
+
+        return lines
+            .dropFirst()
+            .dropLast()
+            .joined(separator: "\n")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
     }
 }
 
@@ -4933,7 +5386,7 @@ private enum AppColor {
 }
 
 private enum Layout {
-    static let minimumWindowWidth: CGFloat = 1320
+    static let minimumWindowWidth: CGFloat = 1460
     static let minimumWindowHeight: CGFloat = 680
     static let windowPadding: CGFloat = 34
 
@@ -4974,11 +5427,12 @@ private enum Layout {
     static let contentIconSize: CGFloat = 32
     static let contentTextSpacing: CGFloat = 2
 
-    static let contentAreaWidth: CGFloat = 1110
+    static let contentAreaWidth: CGFloat = 1250
     static let contentAreaHeight: CGFloat = 560
 
-    static let browserWorkspaceWidth: CGFloat = 1110
+    static let browserWorkspaceWidth: CGFloat = 1250
     static let browserIslandSpacing: CGFloat = 14
+    static let browserPanelWidth: CGFloat = 900
     static let browserChatWidth: CGFloat = 336
     static let browserPanelPadding: CGFloat = 14
     static let browserChatPadding: CGFloat = 18
