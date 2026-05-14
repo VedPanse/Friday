@@ -275,6 +275,7 @@ private struct FridayConversationPanel: View {
     @State private var isFolderHovered = false
     @State private var isFileHovered = false
     @State private var isUndoHovered = false
+    @State private var isStopHovered = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -297,8 +298,13 @@ private struct FridayConversationPanel: View {
                         }
 
                         if viewModel.isResponding {
-                            FridayTypingRow()
-                                .id("fridayTyping")
+                            if viewModel.isGeneratingMedia {
+                                FridayImageGenerationRow()
+                                    .id("fridayTyping")
+                            } else {
+                                FridayTypingRow()
+                                    .id("fridayTyping")
+                            }
                         }
                     }
                     .padding(.top, 14)
@@ -329,6 +335,13 @@ private struct FridayConversationPanel: View {
                 matchedGeometryID: "fridayPrompt",
                 onSubmit: viewModel.sendPrompt
             )
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if viewModel.isResponding {
+                stopButton
+                    .padding(.bottom, Layout.promptHeight + 10)
+                    .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.9)))
+            }
         }
         .onAppear {
             isPromptFocused = true
@@ -441,6 +454,20 @@ private struct FridayConversationPanel: View {
         .background(AppColor.black.opacity(0.22), in: .rect(cornerRadius: 10, style: .continuous))
         .padding(.bottom, 8)
         .transition(AnyTransition.opacity.combined(with: .move(edge: .top)))
+    }
+
+    private var stopButton: some View {
+        Button(action: viewModel.cancelCurrentAction) {
+            Image(systemName: "stop.fill")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(AppColor.white)
+        }
+        .buttonStyle(.plain)
+        .frame(width: 28, height: 28)
+        .background(AppColor.black.opacity(isStopHovered ? 0.38 : 0.26), in: Circle())
+        .cursor(.pointingHand)
+        .onHover { isStopHovered = $0 }
+        .help("Stop Friday")
     }
 
     private func close() {
@@ -560,6 +587,7 @@ private struct FridayBrowserChatIsland: View {
     let namespace: Namespace.ID
 
     @FocusState private var isPromptFocused: Bool
+    @State private var isStopHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -596,8 +624,13 @@ private struct FridayBrowserChatIsland: View {
                         }
 
                         if viewModel.isResponding {
-                            FridayTypingRow()
-                                .id("fridayTyping")
+                            if viewModel.isGeneratingMedia {
+                                FridayImageGenerationRow(compact: true)
+                                    .id("fridayTyping")
+                            } else {
+                                FridayTypingRow()
+                                    .id("fridayTyping")
+                            }
                         }
                     }
                     .padding(.top, 6)
@@ -626,6 +659,22 @@ private struct FridayBrowserChatIsland: View {
                 matchedGeometryID: "browserFridayPrompt",
                 onSubmit: viewModel.sendPrompt
             )
+        }
+        .overlay(alignment: .bottomTrailing) {
+            if viewModel.isResponding {
+                Button(action: viewModel.cancelCurrentAction) {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 10, weight: .bold))
+                        .foregroundStyle(AppColor.white)
+                }
+                .buttonStyle(.plain)
+                .frame(width: 28, height: 28)
+                .background(AppColor.black.opacity(isStopHovered ? 0.38 : 0.26), in: Circle())
+                .cursor(.pointingHand)
+                .onHover { isStopHovered = $0 }
+                .help("Stop Friday")
+                .padding(.bottom, Layout.promptHeight + 10)
+            }
         }
         .padding(Layout.browserChatPadding)
         .frame(width: Layout.browserChatWidth, height: Layout.panelHeight)
@@ -775,6 +824,8 @@ private struct FridayMarkdownView: View {
                 .font(.callout)
                 .foregroundStyle(.white.opacity(0.92))
                 .fixedSize(horizontal: false, vertical: true)
+        case .list(let items, let isOrdered):
+            FridayMarkdownListView(items: items, isOrdered: isOrdered)
         case .horizontalRule:
             Rectangle()
                 .fill(AppColor.white.opacity(0.16))
@@ -799,6 +850,29 @@ private struct FridayMarkdownView: View {
             .callout.weight(.semibold)
         default:
             .caption.weight(.semibold)
+        }
+    }
+}
+
+private struct FridayMarkdownListView: View {
+    let items: [String]
+    let isOrdered: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(isOrdered ? "\(index + 1)." : "•")
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.66))
+                        .frame(width: isOrdered ? 22 : 12, alignment: .trailing)
+
+                    Text(FridayMarkdownParser.inlineAttributedString(from: item))
+                        .font(.callout)
+                        .foregroundStyle(.white.opacity(0.92))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 }
@@ -972,6 +1046,135 @@ private struct FridayTypingRow: View {
     }
 }
 
+private struct FridayImageGenerationRow: View {
+    var compact = false
+
+    private var horizontalInset: CGFloat {
+        compact ? 18 : 54
+    }
+
+    var body: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 10) {
+                ZStack {
+                    Color.black.opacity(0.22)
+
+                    TimelineView(.animation) { timeline in
+                        let time = timeline.date.timeIntervalSinceReferenceDate
+                        SiriAuroraView(time: time)
+                    }
+
+                    Circle()
+                        .fill(.white.opacity(0.08))
+                        .frame(width: compact ? 54 : 70, height: compact ? 54 : 70)
+                        .blur(radius: 8)
+
+                    Image(systemName: "sparkles")
+                        .font(.system(size: compact ? 18 : 24, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.88))
+                        .symbolEffect(.pulse)
+                }
+                .frame(width: compact ? 180 : 240, height: compact ? 104 : 136)
+                .clipShape(.rect(cornerRadius: 16, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .stroke(AppColor.white.opacity(0.14), lineWidth: 1)
+                }
+
+                HStack(spacing: 8) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.white)
+
+                    Text("Generating image")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.78))
+                }
+            }
+            .padding(.horizontal, 13)
+            .padding(.vertical, 11)
+            .background(AppColor.black.opacity(0.24), in: .rect(cornerRadius: 16, style: .continuous))
+
+            Spacer(minLength: horizontalInset)
+        }
+    }
+}
+
+private struct SiriAuroraView: View {
+    let time: TimeInterval
+
+    var body: some View {
+        ZStack {
+            auroraBlob(
+                color: Color(red: 0.14, green: 0.72, blue: 1),
+                width: 130,
+                height: 86,
+                x: sin(time * 0.9) * 28,
+                y: cos(time * 0.7) * 18,
+                rotation: time * 22
+            )
+
+            auroraBlob(
+                color: Color(red: 0.82, green: 0.22, blue: 1),
+                width: 122,
+                height: 92,
+                x: cos(time * 0.8) * 34,
+                y: sin(time * 1.05) * 20,
+                rotation: -time * 18
+            )
+
+            auroraBlob(
+                color: Color(red: 1, green: 0.32, blue: 0.68),
+                width: 110,
+                height: 78,
+                x: sin(time * 1.15 + 1.4) * 30,
+                y: cos(time * 0.95 + 0.7) * 18,
+                rotation: time * 26
+            )
+
+            auroraBlob(
+                color: Color(red: 0.28, green: 1, blue: 0.72),
+                width: 100,
+                height: 74,
+                x: cos(time * 1.2 + 0.8) * 26,
+                y: sin(time * 0.85 + 1.2) * 20,
+                rotation: -time * 24
+            )
+        }
+        .blur(radius: 18)
+        .saturation(1.35)
+        .brightness(0.08)
+        .drawingGroup()
+    }
+
+    private func auroraBlob(
+        color: Color,
+        width: CGFloat,
+        height: CGFloat,
+        x: CGFloat,
+        y: CGFloat,
+        rotation: Double
+    ) -> some View {
+        Ellipse()
+            .fill(
+                RadialGradient(
+                    colors: [
+                        color.opacity(0.92),
+                        color.opacity(0.28),
+                        color.opacity(0),
+                    ],
+                    center: .center,
+                    startRadius: 4,
+                    endRadius: width * 0.5
+                )
+            )
+            .frame(width: width, height: height)
+            .rotationEffect(.degrees(rotation))
+            .offset(x: x, y: y)
+            .blendMode(.screen)
+    }
+}
+
 private struct SidebarItem: Identifiable, Hashable {
     let systemName: String
     let title: String
@@ -989,6 +1192,7 @@ private final class FridayPanelChatViewModel: ObservableObject {
         ),
     ]
     @Published private(set) var isResponding = false
+    @Published private(set) var isGeneratingMedia = false
     @Published private(set) var modelStatusText = "Ready"
     @Published private(set) var contextItems: [FridayContextItem] = []
     @Published private(set) var savedMemoryNotice: FridaySavedMemoryNotice?
@@ -996,6 +1200,7 @@ private final class FridayPanelChatViewModel: ObservableObject {
 
     private let store: FridayAssistantStore
     private let assistant: FridayPanelAssistantService
+    private var currentTask: Task<Void, Never>?
 
     init(store: FridayAssistantStore) {
         self.store = store
@@ -1034,13 +1239,17 @@ private final class FridayPanelChatViewModel: ObservableObject {
         }
 
         isResponding = true
+        isGeneratingMedia = FridayMediaRequestDetector.isMediaGenerationRequest(trimmedPrompt)
         modelStatusText = "Thinking"
 
         let conversation = messages
 
-        Task {
+        currentTask?.cancel()
+        currentTask = Task {
             let response = await assistant.respond(to: trimmedPrompt, conversation: conversation)
+            guard !Task.isCancelled else { return }
             finishResponse(response)
+            currentTask = nil
         }
     }
 
@@ -1056,6 +1265,7 @@ private final class FridayPanelChatViewModel: ObservableObject {
             savedMemoryNotice = FridaySavedMemoryNotice(memoryID: savedMemory.id, text: savedMemory.text)
         }
         isResponding = false
+        isGeneratingMedia = false
         modelStatusText = response.statusText
     }
 
@@ -1078,6 +1288,15 @@ private final class FridayPanelChatViewModel: ObservableObject {
 
     func closeBrowser() {
         browserSession = nil
+    }
+
+    func cancelCurrentAction() {
+        currentTask?.cancel()
+        currentTask = nil
+        isResponding = false
+        isGeneratingMedia = false
+        modelStatusText = "Stopped"
+        messages.append(FridayPanelChatMessage(role: .friday, text: "Stopped."))
     }
 
     private func openBrowser(for request: FridayBrowserRequest) {
@@ -1104,24 +1323,32 @@ private final class FridayPanelChatViewModel: ObservableObject {
     private func performBrowserCommand(_ command: FridayBrowserCommand, in session: FridayBrowserSession) {
         modelStatusText = "Using browser"
 
-        Task {
+        currentTask?.cancel()
+        currentTask = Task {
             let result = await session.perform(command)
+            guard !Task.isCancelled else { return }
             messages.append(FridayPanelChatMessage(role: .friday, text: result.message))
             modelStatusText = "Browser"
+            currentTask = nil
         }
     }
 
     private func performBrowserAgentTask(_ task: String, in session: FridayBrowserSession) {
         isResponding = true
+        isGeneratingMedia = false
         modelStatusText = "Browser agent"
 
         let settings = store.snapshot().settings
 
-        Task {
+        currentTask?.cancel()
+        currentTask = Task {
             let result = await FridayBrowserAgent(settings: settings).run(task: task, session: session)
+            guard !Task.isCancelled else { return }
             messages.append(FridayPanelChatMessage(role: .friday, text: result.message))
             isResponding = false
+            isGeneratingMedia = false
             modelStatusText = result.didNeedConfirmation ? "Needs confirmation" : "Browser"
+            currentTask = nil
         }
     }
 
@@ -1355,6 +1582,15 @@ private nonisolated struct FridayPanelAssistantResponse: Equatable {
 private nonisolated struct FridaySavedMemoryNotice: Equatable {
     let memoryID: UUID
     let text: String
+}
+
+private nonisolated enum FridayMediaRequestDetector {
+    static func isMediaGenerationRequest(_ message: String) -> Bool {
+        let tokens = Set(message.significantMemoryTokens)
+        let asksForGeneration = !tokens.intersection(["generate", "create", "make", "render", "produce", "draw"]).isEmpty
+        let asksForMedia = !tokens.intersection(["image", "img", "picture", "photo", "graphic", "poster", "video", "movie", "clip", "animation"]).isEmpty
+        return asksForGeneration && asksForMedia
+    }
 }
 
 private struct FridayPanelChatMessage: Identifiable, Equatable {
@@ -2046,7 +2282,7 @@ private nonisolated enum FridayBrowserRequestDetector {
         let trimmedText = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
         guard shouldUseBrowser(trimmedText) else { return nil }
 
-        if let explicitURL = explicitURL(in: trimmedText) {
+        if let explicitURL = explicitURL(in: trimmedText, requiresBrowserIntent: false) {
             return FridayBrowserRequest(url: explicitURL, originalText: trimmedText)
         }
 
@@ -2077,29 +2313,30 @@ private nonisolated enum FridayBrowserRequestDetector {
     private static func shouldUseBrowser(_ text: String) -> Bool {
         let lowercasedText = text.lowercased()
 
-        if explicitURL(in: text) != nil {
-            return true
-        }
-
         return [
             "open browser",
             "open a browser",
+            "open in browser",
+            "use browser",
+            "use the browser",
+            "browser mode",
             "open website",
+            "open the website",
+            "open site",
+            "open the site",
+            "open url",
+            "open the url",
             "go to ",
-            "look at ",
-            "look up ",
-            "search web",
-            "search online",
-            "website",
-            "doordash",
-            "door dash",
-            "order food",
-            "uber eats",
-            "amazon",
+            "navigate to ",
+            "load ",
         ].contains { lowercasedText.contains($0) }
     }
 
-    private static func explicitURL(in text: String) -> URL? {
+    private static func explicitURL(in text: String, requiresBrowserIntent: Bool = true) -> URL? {
+        if requiresBrowserIntent, !shouldUseBrowser(text) {
+            return nil
+        }
+
         let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
         let range = NSRange(text.startIndex..<text.endIndex, in: text)
         guard let match = detector?.firstMatch(in: text, options: [], range: range), let url = match.url else {
@@ -2190,6 +2427,7 @@ private nonisolated enum FridayGeneratedMediaKind: Equatable {
 private nonisolated enum FridayMarkdownBlock: Equatable {
     case heading(level: Int, text: String)
     case paragraph(String)
+    case list(items: [String], isOrdered: Bool)
     case horizontalRule
     case table(FridayMarkdownTable)
 }
@@ -2252,6 +2490,13 @@ private nonisolated enum FridayMarkdownParser {
                 flushParagraph()
                 blocks.append(.table(table.value))
                 index = table.nextIndex
+                continue
+            }
+
+            if let list = list(from: lines, startingAt: index) {
+                flushParagraph()
+                blocks.append(.list(items: list.items, isOrdered: list.isOrdered))
+                index = list.nextIndex
                 continue
             }
 
@@ -2333,6 +2578,40 @@ private nonisolated enum FridayMarkdownParser {
         }
 
         return (FridayMarkdownTable(headers: header, rows: rows), index)
+    }
+
+    private static func list(from lines: [String], startingAt startIndex: Int) -> (items: [String], isOrdered: Bool, nextIndex: Int)? {
+        guard let first = listItem(from: lines[startIndex]) else { return nil }
+
+        var items = [first.text]
+        var index = startIndex + 1
+        while index < lines.count {
+            guard let item = listItem(from: lines[index]), item.isOrdered == first.isOrdered else {
+                break
+            }
+
+            items.append(item.text)
+            index += 1
+        }
+
+        return (items, first.isOrdered, index)
+    }
+
+    private static func listItem(from line: String) -> (text: String, isOrdered: Bool)? {
+        let trimmedLine = line.trimmingCharacters(in: CharacterSet.whitespaces)
+        if trimmedLine.hasPrefix("- ") || trimmedLine.hasPrefix("* ") || trimmedLine.hasPrefix("+ ") {
+            return (String(trimmedLine.dropFirst(2)).trimmingCharacters(in: CharacterSet.whitespaces), false)
+        }
+
+        guard
+            let regex = try? NSRegularExpression(pattern: #"^\d+[.)]\s+(.+)$"#),
+            let match = regex.firstMatch(in: trimmedLine, range: NSRange(trimmedLine.startIndex..<trimmedLine.endIndex, in: trimmedLine)),
+            let range = Range(match.range(at: 1), in: trimmedLine)
+        else {
+            return nil
+        }
+
+        return (String(trimmedLine[range]).trimmingCharacters(in: CharacterSet.whitespaces), true)
     }
 
     private static func tableCells(from line: String) -> [String] {
