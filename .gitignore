@@ -1,0 +1,7 @@
+DerivedData/
+.build/
+build/
+*.xcuserstate
+*.xcscmblueprint
+xcuserdata/
+friday-1980s-icon-preview.png

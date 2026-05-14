@@ -9,9 +9,19 @@ import SwiftUI
 
 @main
 struct FridayApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
+
     var body: some Scene {
         WindowGroup {
             ContentView()
+        }
+        .commands {
+            CommandGroup(replacing: .windowArrangement) {
+                Button("Hide Friday") {
+                    FridayWindowController.shared.hideWindow()
+                }
+                .keyboardShortcut("m", modifiers: .command)
+            }
         }
     }
 }

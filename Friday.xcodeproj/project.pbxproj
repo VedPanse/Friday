@@ -6,14 +6,65 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A0946B582FB53E8F00FC5AC6 /* WidgetKit.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A0946B572FB53E8F00FC5AC6 /* WidgetKit.framework */; };
+		A0946B5A2FB53E8F00FC5AC6 /* SwiftUI.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A0946B592FB53E8F00FC5AC6 /* SwiftUI.framework */; };
+		A0946B692FB53E9000FC5AC6 /* FridayWidgetExtension.appex in Embed Foundation Extensions */ = {isa = PBXBuildFile; fileRef = A0946B552FB53E8F00FC5AC6 /* FridayWidgetExtension.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		A0946B672FB53E9000FC5AC6 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = A0946B3B2FB53E1A00FC5AC6 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = A0946B542FB53E8F00FC5AC6;
+			remoteInfo = FridayWidgetExtension;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		A0946B6E2FB53E9000FC5AC6 /* Embed Foundation Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				A0946B692FB53E9000FC5AC6 /* FridayWidgetExtension.appex in Embed Foundation Extensions */,
+			);
+			name = "Embed Foundation Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
 /* Begin PBXFileReference section */
 		A0946B432FB53E1A00FC5AC6 /* Friday.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Friday.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0946B552FB53E8F00FC5AC6 /* FridayWidgetExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = FridayWidgetExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		A0946B572FB53E8F00FC5AC6 /* WidgetKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = WidgetKit.framework; path = System/Library/Frameworks/WidgetKit.framework; sourceTree = SDKROOT; };
+		A0946B592FB53E8F00FC5AC6 /* SwiftUI.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = SwiftUI.framework; path = System/Library/Frameworks/SwiftUI.framework; sourceTree = SDKROOT; };
 /* End PBXFileReference section */
+
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		A0946B6A2FB53E9000FC5AC6 /* Exceptions for "FridayWidget" folder in "FridayWidgetExtension" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = A0946B542FB53E8F00FC5AC6 /* FridayWidgetExtension */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		A0946B452FB53E1A00FC5AC6 /* Friday */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			path = Friday;
+			sourceTree = "<group>";
+		};
+		A0946B5B2FB53E8F00FC5AC6 /* FridayWidget */ = {
+			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				A0946B6A2FB53E9000FC5AC6 /* Exceptions for "FridayWidget" folder in "FridayWidgetExtension" target */,
+			);
+			path = FridayWidget;
 			sourceTree = "<group>";
 		};
 /* End PBXFileSystemSynchronizedRootGroup section */
@@ -26,6 +77,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A0946B522FB53E8F00FC5AC6 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A0946B5A2FB53E8F00FC5AC6 /* SwiftUI.framework in Frameworks */,
+				A0946B582FB53E8F00FC5AC6 /* WidgetKit.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -33,6 +93,8 @@
 			isa = PBXGroup;
 			children = (
 				A0946B452FB53E1A00FC5AC6 /* Friday */,
+				A0946B5B2FB53E8F00FC5AC6 /* FridayWidget */,
+				A0946B562FB53E8F00FC5AC6 /* Frameworks */,
 				A0946B442FB53E1A00FC5AC6 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -41,8 +103,18 @@
 			isa = PBXGroup;
 			children = (
 				A0946B432FB53E1A00FC5AC6 /* Friday.app */,
+				A0946B552FB53E8F00FC5AC6 /* FridayWidgetExtension.appex */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		A0946B562FB53E8F00FC5AC6 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				A0946B572FB53E8F00FC5AC6 /* WidgetKit.framework */,
+				A0946B592FB53E8F00FC5AC6 /* SwiftUI.framework */,
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -55,10 +127,12 @@
 				A0946B3F2FB53E1A00FC5AC6 /* Sources */,
 				A0946B402FB53E1A00FC5AC6 /* Frameworks */,
 				A0946B412FB53E1A00FC5AC6 /* Resources */,
+				A0946B6E2FB53E9000FC5AC6 /* Embed Foundation Extensions */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				A0946B682FB53E9000FC5AC6 /* PBXTargetDependency */,
 			);
 			fileSystemSynchronizedGroups = (
 				A0946B452FB53E1A00FC5AC6 /* Friday */,
@@ -69,6 +143,28 @@
 			productName = Friday;
 			productReference = A0946B432FB53E1A00FC5AC6 /* Friday.app */;
 			productType = "com.apple.product-type.application";
+		};
+		A0946B542FB53E8F00FC5AC6 /* FridayWidgetExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A0946B6B2FB53E9000FC5AC6 /* Build configuration list for PBXNativeTarget "FridayWidgetExtension" */;
+			buildPhases = (
+				A0946B512FB53E8F00FC5AC6 /* Sources */,
+				A0946B522FB53E8F00FC5AC6 /* Frameworks */,
+				A0946B532FB53E8F00FC5AC6 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			fileSystemSynchronizedGroups = (
+				A0946B5B2FB53E8F00FC5AC6 /* FridayWidget */,
+			);
+			name = FridayWidgetExtension;
+			packageProductDependencies = (
+			);
+			productName = FridayWidgetExtension;
+			productReference = A0946B552FB53E8F00FC5AC6 /* FridayWidgetExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
 		};
 /* End PBXNativeTarget section */
 
@@ -81,6 +177,9 @@
 				LastUpgradeCheck = 2650;
 				TargetAttributes = {
 					A0946B422FB53E1A00FC5AC6 = {
+						CreatedOnToolsVersion = 26.5;
+					};
+					A0946B542FB53E8F00FC5AC6 = {
 						CreatedOnToolsVersion = 26.5;
 					};
 				};
@@ -100,12 +199,20 @@
 			projectRoot = "";
 			targets = (
 				A0946B422FB53E1A00FC5AC6 /* Friday */,
+				A0946B542FB53E8F00FC5AC6 /* FridayWidgetExtension */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		A0946B412FB53E1A00FC5AC6 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		A0946B532FB53E8F00FC5AC6 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -122,7 +229,22 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		A0946B512FB53E8F00FC5AC6 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		A0946B682FB53E9000FC5AC6 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = A0946B542FB53E8F00FC5AC6 /* FridayWidgetExtension */;
+			targetProxy = A0946B672FB53E9000FC5AC6 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
 		A0946B4C2FB53E1B00FC5AC6 /* Debug */ = {
@@ -250,6 +372,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Friday/Friday.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -259,6 +382,9 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Friday needs permission to read your Mail inbox summary from Mail.";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Friday needs permission to show today's calendar events.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Friday needs permission to show today's calendar events.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -282,6 +408,7 @@
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Friday/Friday.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
 				CURRENT_PROJECT_VERSION = 1;
@@ -291,6 +418,9 @@
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Friday needs permission to read your Mail inbox summary from Mail.";
+				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Friday needs permission to show today's calendar events.";
+				INFOPLIST_KEY_NSCalendarsUsageDescription = "Friday needs permission to show today's calendar events.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -303,6 +433,70 @@
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+		A0946B6C2FB53E9000FC5AC6 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3SHAP8328D;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = FridayWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = FridayWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vedpanse.Friday.FridayWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A0946B6D2FB53E9000FC5AC6 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				ASSETCATALOG_COMPILER_WIDGET_BACKGROUND_COLOR_NAME = WidgetBackground;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = 3SHAP8328D;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_FILE = FridayWidget/Info.plist;
+				INFOPLIST_KEY_CFBundleDisplayName = FridayWidget;
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+					"@executable_path/../../../../Frameworks",
+				);
+				MACOSX_DEPLOYMENT_TARGET = 26.5;
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.vedpanse.Friday.FridayWidget;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_APPROACHABLE_CONCURRENCY = YES;
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_UPCOMING_FEATURE_MEMBER_IMPORT_VISIBILITY = YES;
 				SWIFT_VERSION = 5.0;
@@ -326,6 +520,15 @@
 			buildConfigurations = (
 				A0946B4F2FB53E1B00FC5AC6 /* Debug */,
 				A0946B502FB53E1B00FC5AC6 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A0946B6B2FB53E9000FC5AC6 /* Build configuration list for PBXNativeTarget "FridayWidgetExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A0946B6C2FB53E9000FC5AC6 /* Debug */,
+				A0946B6D2FB53E9000FC5AC6 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
