@@ -13,6 +13,7 @@ nonisolated final class AppNotificationService: NSObject, UNUserNotificationCent
     static let shared = AppNotificationService()
 
     private let notificationCenter = UNUserNotificationCenter.current()
+    private let settingsURL = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")
 
     private(set) var remoteDeviceToken: String?
 
@@ -24,23 +25,31 @@ nonisolated final class AppNotificationService: NSObject, UNUserNotificationCent
         notificationCenter.delegate = self
 
         Task {
-            await requestAuthorization()
+            await requestAuthorizationIfNeeded()
         }
     }
 
     func sendLocalNotification(title: String, body: String) {
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
+        Task {
+            guard await canSendNotifications() else { return }
 
-        let request = UNNotificationRequest(
-            identifier: UUID().uuidString,
-            content: content,
-            trigger: nil
-        )
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            content.sound = .default
 
-        notificationCenter.add(request)
+            let request = UNNotificationRequest(
+                identifier: UUID().uuidString,
+                content: content,
+                trigger: nil
+            )
+
+            do {
+                try await notificationCenter.add(request)
+            } catch {
+                NSLog("Friday could not schedule notification: \(error.localizedDescription)")
+            }
+        }
     }
 
     func didRegisterForRemoteNotifications(with deviceToken: Data) {
@@ -59,11 +68,52 @@ nonisolated final class AppNotificationService: NSObject, UNUserNotificationCent
         [.banner, .list, .sound]
     }
 
+    private func requestAuthorizationIfNeeded() async {
+        let settings = await notificationCenter.notificationSettings()
+
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return
+        case .denied:
+            NSLog("Friday notifications are disabled in macOS Settings.")
+            return
+        case .notDetermined:
+            await requestAuthorization()
+        @unknown default:
+            return
+        }
+    }
+
     private func requestAuthorization() async {
         do {
-            _ = try await notificationCenter.requestAuthorization(options: [.alert, .badge, .sound])
+            let isAuthorized = try await notificationCenter.requestAuthorization(options: [.alert, .badge, .sound])
+            if !isAuthorized {
+                NSLog("Friday notifications were not authorized.")
+            }
         } catch {
-            NSLog("Friday failed to request notification authorization: \(error.localizedDescription)")
+            NSLog("Friday could not request notification authorization. Enable notifications for Friday in macOS Settings. \(error.localizedDescription)")
         }
+    }
+
+    private func canSendNotifications() async -> Bool {
+        let settings = await notificationCenter.notificationSettings()
+
+        switch settings.authorizationStatus {
+        case .authorized, .provisional, .ephemeral:
+            return true
+        case .denied:
+            NSLog("Friday skipped notification because notifications are disabled in macOS Settings.")
+            return false
+        case .notDetermined:
+            await requestAuthorization()
+            return await canSendNotifications()
+        @unknown default:
+            return false
+        }
+    }
+
+    func openNotificationSettings() {
+        guard let settingsURL else { return }
+        NSWorkspace.shared.open(settingsURL)
     }
 }

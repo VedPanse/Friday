@@ -8,6 +8,7 @@
 import AppKit
 import Combine
 import EventKit
+import MapKit
 import PDFKit
 import Security
 import SwiftUI
@@ -37,18 +38,10 @@ struct ContentView: View {
                     SearchOverlay(isPresented: isSearchPresented)
                         .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
                 case .mail:
-                    StubPanel(
-                        systemName: "mail.stack",
-                        title: "Mail",
-                        subtitle: "Inbox, VIPs, flagged messages, and quick replies will live here."
-                    )
+                    MailPanel()
                     .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
                 case .calendar:
-                    StubPanel(
-                        systemName: "calendar",
-                        title: "Calendar",
-                        subtitle: "Upcoming events, schedule gaps, and meeting prep will live here."
-                    )
+                    CalendarPanel()
                     .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
                 case .stocks:
                     StockMarketPanel()
@@ -116,25 +109,36 @@ private struct MainGlassPanel: View {
                 )
                 .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
             } else {
-                ZStack {
-                    if isConversationPresented {
-                        FridayConversationPanel(
-                            viewModel: viewModel,
-                            isPresented: $isConversationPresented,
-                            namespace: panelAnimation
-                        )
-                        .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
-                    } else {
-                        homeContent
+                HStack(spacing: Layout.browserIslandSpacing) {
+                    ZStack {
+                        if isConversationPresented {
+                            FridayConversationPanel(
+                                viewModel: viewModel,
+                                isPresented: $isConversationPresented,
+                                namespace: panelAnimation
+                            )
+                            .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
+                        } else {
+                            homeContent
+                                .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
+                        }
+                    }
+                    .padding(Layout.panelPadding)
+                    .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+                    .glassSurface(cornerRadius: Layout.panelCornerRadius)
+
+                    if
+                        !isConversationPresented,
+                        let locationRecommendation = dataProvider.calendarSummary.locationRecommendation
+                    {
+                        HomeLocationMapIsland(recommendation: locationRecommendation)
                             .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
                     }
                 }
-                .padding(Layout.panelPadding)
-                .frame(width: Layout.panelWidth, height: Layout.panelHeight)
-                .glassSurface(cornerRadius: Layout.panelCornerRadius)
             }
         }
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: isConversationPresented)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: dataProvider.calendarSummary.locationRecommendation)
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: viewModel.browserSession?.id)
         .task {
             dataProvider.refresh()
@@ -158,13 +162,20 @@ private struct MainGlassPanel: View {
                 onSubmit: beginConversation
             )
 
-            VStack(spacing: Layout.rowSpacing) {
-                ForEach(contextItems) { item in
-                    ContentRow(item: item)
+            ScrollView {
+                VStack(spacing: Layout.rowSpacing) {
+                    FocusCard(
+                        title: "Focus",
+                        subtitle: focusSubtitle,
+                        image: nil,
+                        isGenerating: false
+                    )
+
+                    HomeMailPreviewCard(summary: dataProvider.mailSummary)
+                    ContentRow(item: .init(systemName: "checklist", title: "Tasks", subtitle: "5 open items"))
                 }
             }
-
-            Spacer(minLength: 0)
+            .scrollIndicators(.hidden)
         }
     }
 
@@ -224,29 +235,18 @@ private struct MainGlassPanel: View {
         }
     }
 
-    private var contextItems: [PanelItem] {
-        [
-            calendarItem,
-            mailItem,
-            .init(systemName: "checklist", title: "Tasks", subtitle: "5 open items"),
-        ]
-    }
-
-    private var calendarItem: PanelItem {
+    private var focusSubtitle: String {
         let summary = dataProvider.calendarSummary
-        let subtitle: String
 
         if let statusMessage = summary.statusMessage {
-            subtitle = statusMessage
+            return statusMessage
         } else if let nextEventTitle = summary.nextEventTitle {
-            subtitle = "Next: \(nextEventTitle)"
+            return "Next: \(nextEventTitle)"
         } else if summary.eventCount > 0 {
-            subtitle = "\(summary.eventCount) events today"
+            return "\(summary.eventCount) events today"
         } else {
-            subtitle = "No more events today"
+            return "No more events today"
         }
-
-        return .init(systemName: "calendar", title: "Today", subtitle: subtitle)
     }
 
     private var mailItem: PanelItem {
@@ -1057,29 +1057,12 @@ private struct FridayImageGenerationRow: View {
         HStack {
             VStack(alignment: .leading, spacing: 10) {
                 ZStack {
-                    Color.black.opacity(0.22)
-
                     TimelineView(.animation) { timeline in
                         let time = timeline.date.timeIntervalSinceReferenceDate
-                        SiriAuroraView(time: time)
+                        SiriAuroraView(time: time, compact: compact)
                     }
-
-                    Circle()
-                        .fill(.white.opacity(0.08))
-                        .frame(width: compact ? 54 : 70, height: compact ? 54 : 70)
-                        .blur(radius: 8)
-
-                    Image(systemName: "sparkles")
-                        .font(.system(size: compact ? 18 : 24, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.88))
-                        .symbolEffect(.pulse)
                 }
-                .frame(width: compact ? 180 : 240, height: compact ? 104 : 136)
-                .clipShape(.rect(cornerRadius: 16, style: .continuous))
-                .overlay {
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(AppColor.white.opacity(0.14), lineWidth: 1)
-                }
+                .frame(width: compact ? 188 : 252, height: compact ? 132 : 176)
 
                 HStack(spacing: 8) {
                     ProgressView()
@@ -1090,6 +1073,7 @@ private struct FridayImageGenerationRow: View {
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.white.opacity(0.78))
                 }
+                .padding(.leading, 2)
             }
             .padding(.horizontal, 13)
             .padding(.vertical, 11)
@@ -1102,49 +1086,72 @@ private struct FridayImageGenerationRow: View {
 
 private struct SiriAuroraView: View {
     let time: TimeInterval
+    let compact: Bool
 
     var body: some View {
         ZStack {
+            Circle()
+                .fill(
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.94, green: 0.98, blue: 1).opacity(0.92),
+                            Color(red: 0.82, green: 0.94, blue: 1).opacity(0.34),
+                            Color.clear,
+                        ],
+                        center: .center,
+                        startRadius: 8,
+                        endRadius: baseSize * 0.64
+                    )
+                )
+                .frame(width: baseSize * 1.45, height: baseSize * 1.45)
+                .blur(radius: 16)
+
             auroraBlob(
                 color: Color(red: 0.14, green: 0.72, blue: 1),
-                width: 130,
-                height: 86,
-                x: sin(time * 0.9) * 28,
-                y: cos(time * 0.7) * 18,
-                rotation: time * 22
-            )
-
-            auroraBlob(
-                color: Color(red: 0.82, green: 0.22, blue: 1),
-                width: 122,
-                height: 92,
-                x: cos(time * 0.8) * 34,
-                y: sin(time * 1.05) * 20,
-                rotation: -time * 18
-            )
-
-            auroraBlob(
-                color: Color(red: 1, green: 0.32, blue: 0.68),
-                width: 110,
-                height: 78,
-                x: sin(time * 1.15 + 1.4) * 30,
-                y: cos(time * 0.95 + 0.7) * 18,
+                width: baseSize * 1.12,
+                height: baseSize * 0.82,
+                x: sin(time * 1.0) * baseSize * 0.18,
+                y: cos(time * 0.78) * baseSize * 0.12 - baseSize * 0.08,
                 rotation: time * 26
             )
 
             auroraBlob(
-                color: Color(red: 0.28, green: 1, blue: 0.72),
-                width: 100,
-                height: 74,
-                x: cos(time * 1.2 + 0.8) * 26,
-                y: sin(time * 0.85 + 1.2) * 20,
-                rotation: -time * 24
+                color: Color(red: 0.34, green: 0.95, blue: 0.98),
+                width: baseSize * 0.88,
+                height: baseSize * 0.92,
+                x: cos(time * 0.82 + 0.6) * baseSize * 0.2 + baseSize * 0.14,
+                y: sin(time * 1.12) * baseSize * 0.12,
+                rotation: -time * 20
+            )
+
+            auroraBlob(
+                color: Color(red: 0.37, green: 0.44, blue: 1),
+                width: baseSize * 0.92,
+                height: baseSize * 0.64,
+                x: sin(time * 1.2 + 1.2) * baseSize * 0.16 - baseSize * 0.12,
+                y: cos(time * 0.9 + 0.8) * baseSize * 0.12,
+                rotation: time * 30
+            )
+
+            auroraBlob(
+                color: Color(red: 0.95, green: 0.08, blue: 0.92),
+                width: baseSize * 0.58,
+                height: baseSize * 0.98,
+                x: cos(time * 1.16 + 2.0) * baseSize * 0.12 - baseSize * 0.24,
+                y: sin(time * 1.04 + 0.4) * baseSize * 0.18 + baseSize * 0.16,
+                rotation: -time * 32
             )
         }
-        .blur(radius: 18)
-        .saturation(1.35)
-        .brightness(0.08)
+        .frame(width: baseSize * 1.45, height: baseSize * 1.45)
+        .scaleEffect(1 + CGFloat(sin(time * 1.4)) * 0.035)
+        .blur(radius: 12)
+        .saturation(1.55)
+        .brightness(0.2)
         .drawingGroup()
+    }
+
+    private var baseSize: CGFloat {
+        compact ? 118 : 154
     }
 
     private func auroraBlob(
@@ -1586,10 +1593,49 @@ private nonisolated struct FridaySavedMemoryNotice: Equatable {
 
 private nonisolated enum FridayMediaRequestDetector {
     static func isMediaGenerationRequest(_ message: String) -> Bool {
+        let lowercasedMessage = message.lowercased()
         let tokens = Set(message.significantMemoryTokens)
-        let asksForGeneration = !tokens.intersection(["generate", "create", "make", "render", "produce", "draw"]).isEmpty
-        let asksForMedia = !tokens.intersection(["image", "img", "picture", "photo", "graphic", "poster", "video", "movie", "clip", "animation"]).isEmpty
-        return asksForGeneration && asksForMedia
+        let asksForGeneration = !tokens.intersection([
+            "gen",
+            "generate",
+            "create",
+            "make",
+            "render",
+            "produce",
+            "draw",
+            "design",
+            "paint",
+        ]).isEmpty
+        let asksForMedia = !tokens.intersection([
+            "image",
+            "img",
+            "pic",
+            "picture",
+            "photo",
+            "portrait",
+            "selfie",
+            "graphic",
+            "poster",
+            "video",
+            "movie",
+            "clip",
+            "animation",
+        ]).isEmpty
+        if asksForGeneration && asksForMedia {
+            return true
+        }
+
+        return [
+            "gen an img",
+            "generate an img",
+            "generate a pic",
+            "make an image",
+            "make a picture",
+            "make a photo",
+            "draw me",
+            "create an image",
+            "create a photo",
+        ].contains { lowercasedMessage.contains($0) }
     }
 }
 
@@ -3792,7 +3838,7 @@ private struct OpenAIClient {
 
     private static func isVideoGenerationRequest(_ message: String) -> Bool {
         let tokens = Set(message.significantMemoryTokens)
-        let asksForGeneration = !tokens.intersection(["generate", "create", "make", "render", "produce"]).isEmpty
+        let asksForGeneration = !tokens.intersection(["gen", "generate", "create", "make", "render", "produce", "animate"]).isEmpty
         let asksForVideo = !tokens.intersection(["video", "movie", "clip", "animation"]).isEmpty
         return asksForGeneration && asksForVideo
     }
@@ -3982,6 +4028,48 @@ private nonisolated extension String {
             .joined(separator: "\n")
             .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
     }
+
+    var nilIfEmpty: String? {
+        let trimmed = trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+}
+
+private nonisolated extension EKEvent {
+    var hasUsableLocation: Bool {
+        bestLocationText != nil || structuredLocation?.geoLocation != nil
+    }
+
+    var bestLocationText: String? {
+        let candidates = [
+            structuredLocation?.title,
+            location,
+        ]
+        .compactMap { $0?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).nilIfEmpty }
+        .filter { $0.lowercased() != "none" }
+
+        return candidates.first
+    }
+
+    var structuredCoordinate: CLLocationCoordinate2D? {
+        structuredLocation?.geoLocation?.coordinate
+    }
+}
+
+private nonisolated extension MKPlacemark {
+    var formattedAddress: String? {
+        let addressParts = [
+            subThoroughfare,
+            thoroughfare,
+            locality,
+            administrativeArea,
+            postalCode,
+        ]
+        .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty }
+
+        guard !addressParts.isEmpty else { return nil }
+        return addressParts.joined(separator: ", ")
+    }
 }
 
 @MainActor
@@ -4022,19 +4110,132 @@ private final class HomePanelDataProvider: ObservableObject {
     }
 }
 
+@MainActor
+private final class FocusImageViewModel: ObservableObject {
+    @Published private(set) var image: NSImage?
+    @Published private(set) var isGenerating = false
+
+    private var generatedKey: String?
+    private let generator = FocusImageGenerator()
+
+    func generateIfNeeded(for focus: String) async {
+        let key = focus.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !key.isEmpty, generatedKey != key else { return }
+        generatedKey = key
+
+        guard key != "Checking calendar access" else { return }
+
+        isGenerating = true
+        defer { isGenerating = false }
+
+        image = await generator.image(for: key)
+    }
+}
+
+private struct FocusImageGenerator {
+    func image(for focus: String) async -> NSImage? {
+        let apiKey = FridayKeychain.openAIAPIKey?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+            ?? ""
+        guard !apiKey.isEmpty else { return nil }
+
+        do {
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": "gpt-5.4-mini",
+                "tools": [["type": "image_generation"]],
+                "input": """
+                Generate a cinematic focus-card background directly related to this specific task or event:
+                \(focus)
+
+                Interpret the task literally:
+                - If it is studying, exams, homework, math, coding, reading, or research: show a beautiful desk/study scene, notebooks, laptop, equations, books, or subject-relevant materials.
+                - If it is a meeting or presentation: show an elegant work setup, calendar/planning materials, slides, or collaboration objects.
+                - If it is fitness, errands, travel, chores, or personal admin: show tasteful objects and environment related to that task.
+                - If the task is vague, use a premium abstract planning/focus scene.
+
+                Style: dark premium macOS glass aesthetic, cinematic lighting, cool cyan/blue/purple accents, polished, no text, no logos, no people, no random unrelated objects.
+                """,
+            ] as [String: Any])
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                return nil
+            }
+
+            guard let imageData = Self.extractImageData(from: data) else {
+                return nil
+            }
+
+            return NSImage(data: imageData)
+        } catch {
+            return nil
+        }
+    }
+
+    private static func extractImageData(from data: Data) -> Data? {
+        guard
+            let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let output = object["output"] as? [[String: Any]]
+        else {
+            return nil
+        }
+
+        for item in output {
+            if let result = item["result"] as? String, let data = Data(base64Encoded: result) {
+                return data
+            }
+
+            if
+                let content = item["content"] as? [[String: Any]],
+                let base64 = content.compactMap({ $0["result"] as? String ?? $0["image"] as? String }).first,
+                let data = Data(base64Encoded: base64)
+            {
+                return data
+            }
+        }
+
+        return nil
+    }
+}
+
 private struct HomeCalendarSummary: Equatable {
     let eventCount: Int
     let nextEventTitle: String?
+    let locationRecommendation: HomeLocationRecommendation?
     let statusMessage: String?
 
     static let loading = HomeCalendarSummary(
         eventCount: 0,
         nextEventTitle: nil,
+        locationRecommendation: nil,
         statusMessage: "Checking calendar access"
     )
 
     static func unavailable(_ message: String) -> HomeCalendarSummary {
-        HomeCalendarSummary(eventCount: 0, nextEventTitle: nil, statusMessage: message)
+        HomeCalendarSummary(eventCount: 0, nextEventTitle: nil, locationRecommendation: nil, statusMessage: message)
+    }
+}
+
+nonisolated private struct HomeLocationRecommendation: Equatable {
+    let title: String
+    let subtitle: String
+    let locationName: String
+    let address: String?
+    let query: String
+    let coordinate: CLLocationCoordinate2D?
+
+    static func == (lhs: HomeLocationRecommendation, rhs: HomeLocationRecommendation) -> Bool {
+        lhs.title == rhs.title
+            && lhs.subtitle == rhs.subtitle
+            && lhs.locationName == rhs.locationName
+            && lhs.address == rhs.address
+            && lhs.query == rhs.query
+            && lhs.coordinate?.latitude == rhs.coordinate?.latitude
+            && lhs.coordinate?.longitude == rhs.coordinate?.longitude
     }
 }
 
@@ -4062,31 +4263,182 @@ private protocol HomeMailReading {
     func inboxSummary() async throws -> HomeMailSummary
 }
 
+private final class HomeCalendarEventClassifier {
+    func locationRecommendation(from events: [EKEvent]) async -> HomeLocationRecommendation? {
+        let eventsWithLocation = events.filter(\.hasUsableLocation)
+        guard !eventsWithLocation.isEmpty else { return nil }
+
+        for event in eventsWithLocation {
+            if await isLikelyMeetingOrAppointment(event) {
+                return await makeRecommendation(for: event)
+            }
+        }
+
+        return await makeRecommendation(for: eventsWithLocation[0])
+    }
+
+    private func isLikelyMeetingOrAppointment(_ event: EKEvent) async -> Bool {
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *), case .available = SystemLanguageModel.default.availability {
+            do {
+                let session = LanguageModelSession(instructions: """
+                You classify calendar events for a personal assistant. Reply with exactly YES or NO.
+                YES means this is likely a meeting with people, an appointment, reservation, class/lab/session, interview, office visit, coffee/lunch meetup, or any calendar item where the user may need to go to a location.
+                NO means reminders, solo tasks, focus blocks, birthdays, generic holds, or events without real-world attendance.
+                """)
+                let response = try await session.respond(to: """
+                Title: \(event.title ?? "")
+                Location: \(event.bestLocationText ?? "")
+                Notes: \(event.notes ?? "")
+                Has attendees: \(!(event.attendees ?? []).isEmpty)
+                """)
+
+                return response.content.trimmingCharacters(in: .whitespacesAndNewlines).uppercased().hasPrefix("YES")
+            } catch {
+                return deterministicMeetingDetection(event)
+            }
+        }
+        #endif
+
+        return deterministicMeetingDetection(event)
+    }
+
+    private func makeRecommendation(for event: EKEvent) async -> HomeLocationRecommendation {
+        let rawLocation = event.bestLocationText ?? event.title ?? "Location"
+        let resolvedLocation: GeocodedCalendarLocation
+        if let coordinate = event.structuredCoordinate {
+            resolvedLocation = GeocodedCalendarLocation(name: rawLocation, address: nil, coordinate: coordinate)
+        } else {
+            resolvedLocation = await geocodedLocation(for: rawLocation)
+        }
+        let locationName = resolvedLocation.name ?? rawLocation
+        let address = resolvedLocation.address
+        let title = locationName.nilIfEmpty ?? event.title ?? "Location"
+        let subtitle = event.title.nilIfEmpty.map { "Upcoming: \($0)" } ?? "Upcoming calendar location"
+
+        return HomeLocationRecommendation(
+            title: title,
+            subtitle: subtitle,
+            locationName: locationName.nilIfEmpty ?? title,
+            address: address,
+            query: rawLocation.nilIfEmpty ?? title,
+            coordinate: resolvedLocation.coordinate
+        )
+    }
+
+    private func deterministicMeetingDetection(_ event: EKEvent) -> Bool {
+        if !(event.attendees ?? []).isEmpty {
+            return true
+        }
+
+        guard event.hasUsableLocation else { return false }
+
+        let text = [
+            event.title,
+            event.bestLocationText,
+            event.notes,
+        ]
+        .compactMap { $0 }
+        .joined(separator: " ")
+        .lowercased()
+
+        let meetingKeywords = [
+            "meeting",
+            "meet",
+            "appointment",
+            "reservation",
+            "interview",
+            "coffee",
+            "lunch",
+            "dinner",
+            "doctor",
+            "dentist",
+            "office",
+            "class",
+            "lecture",
+            "lab",
+            "seminar",
+            "call",
+            "sync",
+            "1:1",
+            "one on one",
+        ]
+
+        return meetingKeywords.contains { text.contains($0) } || event.hasUsableLocation
+    }
+
+    private func geocodedLocation(for query: String) async -> GeocodedCalendarLocation {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            return GeocodedCalendarLocation(name: nil, address: nil, coordinate: nil)
+        }
+
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = trimmedQuery
+
+        do {
+            let response = try await MKLocalSearch(request: request).start()
+            guard let item = response.mapItems.first else {
+                return GeocodedCalendarLocation(name: trimmedQuery, address: nil, coordinate: nil)
+            }
+
+            return GeocodedCalendarLocation(
+                name: item.name,
+                address: item.placemark.formattedAddress,
+                coordinate: item.placemark.coordinate
+            )
+        } catch {
+            return GeocodedCalendarLocation(name: trimmedQuery, address: nil, coordinate: nil)
+        }
+    }
+}
+
+nonisolated private struct GeocodedCalendarLocation {
+    let name: String?
+    let address: String?
+    let coordinate: CLLocationCoordinate2D?
+}
+
 private final class HomeEventKitCalendarReader: HomeCalendarReading {
     private let eventStore = EKEventStore()
+    private let eventClassifier = HomeCalendarEventClassifier()
 
     func todaySummary() async throws -> HomeCalendarSummary {
         try await requestCalendarAccessIfNeeded()
 
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: Date())
-        guard let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) else {
+        guard
+            let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay),
+            let locationSearchEnd = calendar.date(byAdding: .day, value: 7, to: startOfDay)
+        else {
             throw HomePanelDataError.invalidDateRange
         }
 
-        let predicate = eventStore.predicateForEvents(
+        let todayPredicate = eventStore.predicateForEvents(
             withStart: Date(),
             end: endOfDay,
             calendars: nil
         )
+        let locationPredicate = eventStore.predicateForEvents(
+            withStart: Date(),
+            end: locationSearchEnd,
+            calendars: nil
+        )
 
-        let events = eventStore.events(matching: predicate)
+        let events = eventStore.events(matching: todayPredicate)
             .filter { !$0.isAllDay }
             .sorted { $0.startDate < $1.startDate }
+        let locationEvents = eventStore.events(matching: locationPredicate)
+            .filter { !$0.isAllDay }
+            .sorted { $0.startDate < $1.startDate }
+
+        let locationRecommendation = await eventClassifier.locationRecommendation(from: locationEvents)
 
         return HomeCalendarSummary(
             eventCount: events.count,
             nextEventTitle: events.first?.title,
+            locationRecommendation: locationRecommendation,
             statusMessage: nil
         )
     }
@@ -4171,7 +4523,7 @@ private final class HomeMailAppleScriptReader: HomeMailReading {
         return (unreadCount, latestSubject)
     }
 
-    private nonisolated static func message(from errorInfo: NSDictionary) -> String {
+    fileprivate nonisolated static func message(from errorInfo: NSDictionary) -> String {
         guard let message = errorInfo[NSAppleScript.errorMessage] as? String else {
             return "Mail automation was not allowed"
         }
@@ -4467,42 +4819,54 @@ private struct SettingsStatRow: View {
 
 private struct StockMarketPanel: View {
     @StateObject private var viewModel = StockMarketViewModel()
-    @State private var tickerText = "AAPL"
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Layout.browserIslandSpacing) {
+            StockMarketMainIsland(viewModel: viewModel)
+            StockCompanyIsland(viewModel: viewModel)
+        }
+        .frame(width: Layout.browserWorkspaceWidth, height: Layout.panelHeight)
+        .task {
+            await viewModel.load(symbol: viewModel.symbol)
+        }
+    }
+}
+
+private struct StockMarketMainIsland: View {
+    @ObservedObject var viewModel: StockMarketViewModel
+
     @State private var isRefreshHovered = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            header
-            rangeSelector
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                header
+                rangeSelector
 
-            HStack(alignment: .top, spacing: 18) {
                 VStack(alignment: .leading, spacing: 14) {
                     priceHeader
                     StockChartView(points: viewModel.points, isPositive: viewModel.quote?.isPositive ?? true)
-                        .frame(height: 190)
+                        .frame(height: 220)
                     statsGrid
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-                StockNewsCard(item: viewModel.news.first, ticker: viewModel.symbol)
-                    .frame(width: 250)
-            }
+                StockAIOverviewCard(analysis: viewModel.analysisText, isLoading: viewModel.isLoadingAnalysis)
 
-            if let message = viewModel.statusMessage {
-                Text(message)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.58))
-                    .lineLimit(2)
-            }
+                relatedNews
 
-            Spacer(minLength: 0)
+                if let message = viewModel.statusMessage {
+                    Text(message)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.58))
+                        .lineLimit(2)
+                }
+            }
+            .padding(Layout.panelPadding)
         }
-        .padding(Layout.panelPadding)
-        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+        .scrollIndicators(.hidden)
+        .frame(width: Layout.browserPanelWidth, height: Layout.panelHeight)
         .glassSurface(cornerRadius: Layout.panelCornerRadius)
-        .task {
-            await viewModel.load(symbol: tickerText)
-        }
     }
 
     private var header: some View {
@@ -4525,21 +4889,8 @@ private struct StockMarketPanel: View {
 
             Spacer()
 
-            TextField("AAPL", text: $tickerText)
-                .textFieldStyle(.plain)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(.white)
-                .tint(.white)
-                .multilineTextAlignment(.center)
-                .textCase(.uppercase)
-                .frame(width: 76, height: 32)
-                .background(AppColor.black.opacity(0.24), in: .rect(cornerRadius: 10, style: .continuous))
-                .onSubmit {
-                    Task { await viewModel.load(symbol: tickerText) }
-                }
-
             Button {
-                Task { await viewModel.load(symbol: tickerText) }
+                Task { await viewModel.load(symbol: viewModel.symbol) }
             } label: {
                 Image(systemName: "arrow.clockwise")
                     .font(.system(size: 11, weight: .semibold))
@@ -4601,6 +4952,153 @@ private struct StockMarketPanel: View {
             StockStatCell(title: "Low", value: viewModel.quote?.lowText ?? "--")
             StockStatCell(title: "Volume", value: viewModel.quote?.volumeText ?? "--")
         }
+    }
+
+    private var relatedNews: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Related news")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.58))
+
+            if viewModel.news.isEmpty {
+                Text("No recent stock news found for \(viewModel.symbol).")
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.58))
+                    .padding(12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(AppColor.black.opacity(0.16), in: .rect(cornerRadius: 12, style: .continuous))
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(viewModel.news) { item in
+                        StockNewsRow(item: item)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct StockCompanyIsland: View {
+    @ObservedObject var viewModel: StockMarketViewModel
+
+    @State private var query = ""
+
+    private var filteredCompanies: [StockCompany] {
+        let trimmedQuery = query.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else { return StockCompany.defaults }
+
+        return StockCompany.defaults.filter {
+            $0.symbol.localizedCaseInsensitiveContains(trimmedQuery)
+                || $0.name.localizedCaseInsensitiveContains(trimmedQuery)
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 10) {
+                Image(systemName: "building.2")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .frame(width: Layout.appIconSize, height: Layout.appIconSize)
+                    .background(AppColor.black.opacity(0.2), in: Circle())
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Companies")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text("Search tickers")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.56))
+                }
+
+                Spacer()
+            }
+
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.58))
+
+                TextField("AAPL, Tesla, Nvidia", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .tint(.white)
+                    .onSubmit {
+                        Task { await viewModel.load(symbol: query) }
+                    }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 38)
+            .background(AppColor.black.opacity(0.24), in: .rect(cornerRadius: 12, style: .continuous))
+
+            ScrollView {
+                VStack(spacing: 8) {
+                    if !query.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).isEmpty {
+                        StockCompanyButton(
+                            company: StockCompany(symbol: query.uppercased(), name: "Load custom ticker"),
+                            isSelected: viewModel.symbol == query.uppercased()
+                        ) {
+                            Task { await viewModel.load(symbol: query) }
+                        }
+                    }
+
+                    ForEach(filteredCompanies) { company in
+                        StockCompanyButton(company: company, isSelected: viewModel.symbol == company.symbol) {
+                            query = company.symbol
+                            Task { await viewModel.load(symbol: company.symbol) }
+                        }
+                    }
+                }
+            }
+            .scrollIndicators(.hidden)
+        }
+        .padding(Layout.browserChatPadding)
+        .frame(width: Layout.browserChatWidth, height: Layout.panelHeight)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+    }
+}
+
+private struct StockCompanyButton: View {
+    let company: StockCompany
+    let isSelected: Bool
+    let action: () -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Text(company.symbol.prefixString(2))
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .frame(width: 32, height: 32)
+                    .background(AppColor.black.opacity(0.24), in: Circle())
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(company.symbol)
+                        .font(.callout.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text(company.name)
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.58))
+                        .lineLimit(1)
+                }
+
+                Spacer()
+            }
+            .padding(10)
+            .background(AppColor.black.opacity(isSelected ? 0.34 : (isHovered ? 0.26 : 0.16)), in: .rect(cornerRadius: 13, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 13, style: .continuous)
+                    .stroke(AppColor.white.opacity(isSelected ? 0.2 : 0.06), lineWidth: 1)
+            }
+        }
+        .buttonStyle(.plain)
+        .cursor(.pointingHand)
+        .onHover { isHovered = $0 }
     }
 }
 
@@ -4673,59 +5171,115 @@ private struct StockStatCell: View {
     }
 }
 
-private struct StockNewsCard: View {
-    let item: StockNewsItem?
-    let ticker: String
+private struct StockAIOverviewCard: View {
+    let analysis: String
+    let isLoading: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
-                Text("Analysis")
+                Text("AI investment overview")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.black.opacity(0.54))
 
                 Spacer()
 
-                Image(systemName: "newspaper")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.black.opacity(0.54))
+                if isLoading {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(.black.opacity(0.55))
+                } else {
+                    Image(systemName: "brain.head.profile")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.black.opacity(0.54))
+                }
             }
 
-            Text(item?.title ?? "\(ticker) market context")
+            Text("Is this a good idea?")
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(.black.opacity(0.92))
-                .lineLimit(4)
 
-            Text(item?.summary ?? "Friday will show recent market context here when news is available for this ticker.")
-                .font(.caption)
-                .foregroundStyle(.black.opacity(0.62))
-                .lineSpacing(2)
-                .lineLimit(9)
-
-            Spacer(minLength: 0)
-
-            HStack {
-                Circle()
-                    .fill(.black.opacity(0.34))
-                    .frame(width: 5, height: 5)
-
-                Text(item?.source ?? "Market feed")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.black.opacity(0.48))
-
-                Spacer()
-            }
+            Text(analysis)
+                .font(.callout)
+                .foregroundStyle(.black.opacity(0.66))
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(18)
-        .frame(maxHeight: .infinity)
-        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24, style: .continuous))
-        .background(AppColor.white.opacity(0.62), in: .rect(cornerRadius: 24, style: .continuous))
-        .foregroundStyle(AppColor.black)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.ultraThinMaterial, in: .rect(cornerRadius: 20, style: .continuous))
+        .background(AppColor.white.opacity(0.7), in: .rect(cornerRadius: 20, style: .continuous))
         .overlay {
-            RoundedRectangle(cornerRadius: 24, style: .continuous)
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
                 .stroke(AppColor.white.opacity(0.38), lineWidth: 1)
         }
     }
+}
+
+private struct StockNewsRow: View {
+    let item: StockNewsItem
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            HStack {
+                Text(item.source)
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.48))
+
+                Spacer()
+
+                Image(systemName: "newspaper")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.42))
+            }
+
+            Text(item.title)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.9))
+                .lineLimit(2)
+
+            if !item.summary.isEmpty {
+                Text(item.summary)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.62))
+                    .lineSpacing(2)
+                    .lineLimit(3)
+            }
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 13, style: .continuous))
+    }
+}
+
+private struct StockCompany: Identifiable, Equatable {
+    let symbol: String
+    let name: String
+
+    var id: String { symbol }
+
+    static let defaults: [StockCompany] = [
+        StockCompany(symbol: "AAPL", name: "Apple"),
+        StockCompany(symbol: "MSFT", name: "Microsoft"),
+        StockCompany(symbol: "NVDA", name: "Nvidia"),
+        StockCompany(symbol: "AMZN", name: "Amazon"),
+        StockCompany(symbol: "GOOGL", name: "Alphabet"),
+        StockCompany(symbol: "META", name: "Meta"),
+        StockCompany(symbol: "TSLA", name: "Tesla"),
+        StockCompany(symbol: "AMD", name: "Advanced Micro Devices"),
+        StockCompany(symbol: "NFLX", name: "Netflix"),
+        StockCompany(symbol: "AVGO", name: "Broadcom"),
+        StockCompany(symbol: "JPM", name: "JPMorgan Chase"),
+        StockCompany(symbol: "V", name: "Visa"),
+        StockCompany(symbol: "LLY", name: "Eli Lilly"),
+        StockCompany(symbol: "COST", name: "Costco"),
+        StockCompany(symbol: "UNH", name: "UnitedHealth"),
+        StockCompany(symbol: "DIS", name: "Disney"),
+        StockCompany(symbol: "BAC", name: "Bank of America"),
+        StockCompany(symbol: "XOM", name: "Exxon Mobil"),
+        StockCompany(symbol: "SPY", name: "S&P 500 ETF"),
+        StockCompany(symbol: "QQQ", name: "Nasdaq 100 ETF"),
+    ]
 }
 
 @MainActor
@@ -4735,6 +5289,8 @@ private final class StockMarketViewModel: ObservableObject {
     @Published private(set) var quote: StockQuote?
     @Published private(set) var points: [Double] = []
     @Published private(set) var news: [StockNewsItem] = []
+    @Published private(set) var analysisText = "Load a company to see Friday’s investment overview."
+    @Published private(set) var isLoadingAnalysis = false
     @Published private(set) var statusMessage: String?
 
     private let service = StockMarketService()
@@ -4747,20 +5303,27 @@ private final class StockMarketViewModel: ObservableObject {
 
         symbol = cleanedSymbol
         statusMessage = "Loading \(cleanedSymbol)"
+        analysisText = "Building Friday’s investment overview for \(cleanedSymbol)..."
+        isLoadingAnalysis = true
 
         do {
             async let chartResponse = service.chart(symbol: cleanedSymbol, range: range)
             async let newsResponse = service.news(symbol: cleanedSymbol)
 
             let chart = try await chartResponse
+            let newsItems = await (try? newsResponse) ?? []
             quote = chart.quote
             points = chart.points
-            news = await (try? newsResponse) ?? []
+            news = newsItems
             statusMessage = "Market data from Yahoo Finance. Delayed where exchanges require it."
+            analysisText = await service.analysis(for: chart.quote, points: chart.points, news: newsItems)
+            isLoadingAnalysis = false
         } catch {
             quote = nil
             points = []
             news = []
+            analysisText = "I could not produce an investment overview because market data did not load."
+            isLoadingAnalysis = false
             statusMessage = "Could not load \(cleanedSymbol): \(error.localizedDescription)"
         }
     }
@@ -4914,6 +5477,58 @@ private struct StockMarketService {
         return StockNewsRSSParser.items(from: data)
     }
 
+    func analysis(for quote: StockQuote, points: [Double], news: [StockNewsItem]) async -> String {
+        let fallback = fallbackAnalysis(for: quote, points: points, news: news)
+        let apiKey = FridayKeychain.openAIAPIKey?.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"]
+            ?? ""
+        guard !apiKey.isEmpty else {
+            return fallback
+        }
+
+        do {
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: [
+                "model": "gpt-5.4-mini",
+                "max_output_tokens": 420,
+                "instructions": """
+                You are Friday, giving a concise investment overview. Be practical and balanced.
+                Do not promise returns. Do not give personalized financial advice.
+                Answer whether it looks like a good idea to investigate investing, using current quote trend and headlines.
+                Structure the answer as 3 short bullets: Bull case, Bear case, Friday's take.
+                """,
+                "input": """
+                Ticker: \(quote.symbol)
+                Company: \(quote.shortName)
+                Price: \(quote.priceText)
+                Change: \(quote.changeText)
+                Open: \(quote.openText)
+                High: \(quote.highText)
+                Low: \(quote.lowText)
+                Volume: \(quote.volumeText)
+                Chart first price: \(points.first?.formatted(.number.precision(.fractionLength(2))) ?? "unknown")
+                Chart last price: \(points.last?.formatted(.number.precision(.fractionLength(2))) ?? "unknown")
+
+                Recent headlines:
+                \(news.prefix(6).map { "- \($0.title): \($0.summary)" }.joined(separator: "\n"))
+                """,
+            ] as [String: Any])
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                return fallback
+            }
+
+            let text = Self.extractText(from: data)
+            return text.isEmpty ? fallback : text
+        } catch {
+            return fallback
+        }
+    }
+
     private static func parseChart(data: Data, fallbackSymbol: String) throws -> StockChartResponse {
         guard
             let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -4947,6 +5562,43 @@ private struct StockMarketService {
         )
 
         return StockChartResponse(quote: quote, points: closes)
+    }
+
+    private func fallbackAnalysis(for quote: StockQuote, points: [Double], news: [StockNewsItem]) -> String {
+        let trend: String
+        if let first = points.first, let last = points.last, first != 0 {
+            let percent = ((last - first) / first) * 100
+            trend = "\(percent >= 0 ? "up" : "down") \(abs(percent).formatted(.number.precision(.fractionLength(1))))% over the selected chart range"
+        } else {
+            trend = "trend unclear from the selected chart range"
+        }
+
+        return """
+        - **Bull case:** \(quote.shortName) is \(trend), and current volume is \(quote.volumeText).
+        - **Bear case:** Headlines and price action need more review before treating this as a high-conviction buy.
+        - **Friday’s take:** Worth researching further, but not enough here to call it an obvious buy. Check valuation, earnings, competitive position, and your risk tolerance first.
+        """
+    }
+
+    private static func extractText(from data: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ""
+        }
+
+        if let outputText = object["output_text"] as? String {
+            return outputText
+        }
+
+        guard let output = object["output"] as? [[String: Any]] else {
+            return ""
+        }
+
+        return output
+            .compactMap { item -> String? in
+                guard let content = item["content"] as? [[String: Any]] else { return nil }
+                return content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            }
+            .joined(separator: "\n")
     }
 }
 
@@ -5013,6 +5665,965 @@ private enum StockMarketError: LocalizedError {
             "Market data request failed"
         case .invalidResponse:
             "Market data response was not readable"
+        }
+    }
+}
+
+private struct MailPanel: View {
+    @StateObject private var viewModel = MailPanelViewModel()
+    @State private var isRefreshHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            header
+
+            if viewModel.isLoading && viewModel.messages.isEmpty {
+                MailLoadingState()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        if let message = viewModel.featuredMessage {
+                            FeaturedMailCard(message: message)
+                        }
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Inbox")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.58))
+
+                            if viewModel.messages.isEmpty {
+                                Text(viewModel.statusMessage ?? "No recent inbox messages")
+                                    .font(.callout.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.66))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(14)
+                                    .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 14, style: .continuous))
+                            } else {
+                                ForEach(viewModel.messages) { message in
+                                    MailMessageRow(message: message)
+                                }
+                            }
+                        }
+
+                        if let statusMessage = viewModel.statusMessage, !viewModel.messages.isEmpty {
+                            Text(statusMessage)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+        .padding(Layout.panelPadding)
+        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+        .task {
+            await viewModel.refresh()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Layout.headerSpacing) {
+            Image(systemName: "mail.stack")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(AppColor.white)
+                .frame(width: Layout.appIconSize, height: Layout.appIconSize)
+                .background(AppColor.black.opacity(0.2), in: Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Mail")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text(viewModel.headerSubtitle)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.56))
+            }
+
+            Spacer()
+
+            Button {
+                Task { await viewModel.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppColor.white)
+            }
+            .buttonStyle(.plain)
+            .frame(width: Layout.headerButtonSize, height: Layout.headerButtonSize)
+            .background(AppColor.black.opacity(isRefreshHovered ? 0.32 : 0.2), in: Circle())
+            .cursor(.pointingHand)
+            .onHover { isRefreshHovered = $0 }
+            .help("Refresh Mail")
+        }
+    }
+}
+
+private struct MailLoadingState: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(AppColor.white)
+
+            Text("Reading Mail")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.white.opacity(0.68))
+        }
+    }
+}
+
+private struct FeaturedMailCard: View {
+    let message: MailPanelMessage
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 8) {
+                Image(systemName: "envelope.fill")
+                    .font(.system(size: 10, weight: .bold))
+                Text(message.subject)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                Spacer()
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 12, weight: .semibold))
+            }
+            .foregroundStyle(.white.opacity(0.56))
+
+            HStack(alignment: .firstTextBaseline) {
+                Text(message.senderName)
+                    .font(.title3.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.88))
+                    .lineLimit(1)
+
+                Spacer()
+
+                Text(message.receivedText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.46))
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Text(message.subject)
+                    .font(.title2.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                Text(message.preview)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.76))
+                    .lineLimit(5)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(spacing: 10) {
+                MailActionButton(title: "Reply")
+                MailActionButton(title: "Forward")
+                MailActionButton(title: "Delete")
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.black.opacity(0.2), in: .rect(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppColor.white.opacity(0.12), lineWidth: 1)
+        }
+    }
+}
+
+private struct MailActionButton: View {
+    let title: String
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(title) {}
+            .buttonStyle(.plain)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.82))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(AppColor.black.opacity(isHovered ? 0.34 : 0.22), in: .rect(cornerRadius: 10, style: .continuous))
+            .cursor(.pointingHand)
+            .onHover { isHovered = $0 }
+    }
+}
+
+private struct MailMessageRow: View {
+    let message: MailPanelMessage
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: message.isUnread ? "envelope.fill" : "envelope")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(.white.opacity(message.isUnread ? 0.92 : 0.58))
+                .frame(width: 34, height: 34)
+                .background(AppColor.black.opacity(0.22), in: Circle())
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(message.senderName)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+
+                    Spacer()
+
+                    Text(message.receivedText)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.46))
+                }
+
+                Text(message.subject)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.82))
+                    .lineLimit(1)
+
+                Text(message.preview)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.56))
+                    .lineLimit(2)
+            }
+        }
+        .padding(13)
+        .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 15, style: .continuous))
+    }
+}
+
+@MainActor
+private final class MailPanelViewModel: ObservableObject {
+    @Published private(set) var messages: [MailPanelMessage] = []
+    @Published private(set) var statusMessage: String?
+    @Published private(set) var isLoading = false
+
+    private let reader = MailPanelReader()
+
+    var featuredMessage: MailPanelMessage? {
+        messages.first
+    }
+
+    var headerSubtitle: String {
+        if isLoading {
+            return "Reading your inbox"
+        }
+
+        let unreadCount = messages.filter(\.isUnread).count
+        if unreadCount > 0 {
+            return unreadCount == 1 ? "1 unread message" : "\(unreadCount) unread messages"
+        }
+
+        return messages.isEmpty ? "No recent messages loaded" : "\(messages.count) recent messages"
+    }
+
+    func refresh() async {
+        isLoading = true
+        statusMessage = nil
+
+        do {
+            let snapshot = try await reader.snapshot()
+            messages = snapshot.messages
+            statusMessage = snapshot.statusMessage
+        } catch {
+            messages = []
+            statusMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+}
+
+nonisolated private struct MailPanelSnapshot: Equatable {
+    let messages: [MailPanelMessage]
+    let statusMessage: String?
+}
+
+nonisolated private struct MailPanelMessage: Identifiable, Equatable {
+    let id: String
+    let sender: String
+    let subject: String
+    let preview: String
+    let receivedText: String
+    let isUnread: Bool
+
+    var senderName: String {
+        sender.components(separatedBy: " <").first?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? sender
+    }
+}
+
+private final class MailPanelReader {
+    private nonisolated static let mailBundleIdentifier = "com.apple.mail"
+    private nonisolated static let messageDelimiter = "\u{1E}"
+    private nonisolated static let fieldDelimiter = "\u{1F}"
+
+    func snapshot() async throws -> MailPanelSnapshot {
+        try await Task.detached(priority: .userInitiated) {
+            let messages = try Self.executeInboxScript()
+            return MailPanelSnapshot(
+                messages: messages,
+                statusMessage: messages.isEmpty ? "Friday can access Mail, but did not find recent inbox messages." : nil
+            )
+        }.value
+    }
+
+    private nonisolated static func executeInboxScript() throws -> [MailPanelMessage] {
+        let source = """
+        on fridayClean(inputText)
+            set previousDelimiters to AppleScript's text item delimiters
+            set AppleScript's text item delimiters to {return, linefeed, tab}
+            set cleanedItems to text items of (inputText as text)
+            set AppleScript's text item delimiters to " "
+            set cleanedText to cleanedItems as text
+            set AppleScript's text item delimiters to previousDelimiters
+            return cleanedText
+        end fridayClean
+
+        tell application id "\(mailBundleIdentifier)"
+            set inboxMessages to messages of inbox
+            set messageCount to count of inboxMessages
+            set messageLimit to messageCount
+
+            if messageLimit is greater than 8 then
+                set messageLimit to 8
+            end if
+
+            set outputText to ""
+
+            repeat with messageIndex from 1 to messageLimit
+                set mailMessage to item messageIndex of inboxMessages
+                set messageID to message id of mailMessage
+                set senderText to my fridayClean(sender of mailMessage)
+                set subjectText to my fridayClean(subject of mailMessage)
+                set previewText to my fridayClean(content of mailMessage)
+                set receivedText to (date received of mailMessage) as text
+                set unreadText to (read status of mailMessage is false) as text
+
+                if length of previewText is greater than 360 then
+                    set previewText to text 1 thru 360 of previewText
+                end if
+
+                set outputText to outputText & messageID & "\(fieldDelimiter)" & senderText & "\(fieldDelimiter)" & subjectText & "\(fieldDelimiter)" & previewText & "\(fieldDelimiter)" & receivedText & "\(fieldDelimiter)" & unreadText
+
+                if messageIndex is less than messageLimit then
+                    set outputText to outputText & "\(messageDelimiter)"
+                end if
+            end repeat
+
+            return outputText
+        end tell
+        """
+
+        guard let script = NSAppleScript(source: source) else {
+            throw HomePanelDataError.mailScriptUnavailable
+        }
+
+        var errorInfo: NSDictionary?
+        let descriptor = script.executeAndReturnError(&errorInfo)
+
+        if let errorInfo {
+            throw HomePanelDataError.mailAutomationFailed(HomeMailAppleScriptReader.message(from: errorInfo))
+        }
+
+        return parse(output: descriptor.stringValue ?? "")
+    }
+
+    private nonisolated static func parse(output: String) -> [MailPanelMessage] {
+        output
+            .components(separatedBy: messageDelimiter)
+            .compactMap { record in
+                let fields = record.components(separatedBy: fieldDelimiter)
+                guard fields.count >= 6 else { return nil }
+
+                return MailPanelMessage(
+                    id: fields[0].nilIfEmpty ?? UUID().uuidString,
+                    sender: fields[1].nilIfEmpty ?? "Unknown sender",
+                    subject: fields[2].nilIfEmpty ?? "(No subject)",
+                    preview: fields[3].nilIfEmpty ?? "No preview available.",
+                    receivedText: fields[4].nilIfEmpty ?? "Recently",
+                    isUnread: fields[5].lowercased() == "true"
+                )
+            }
+    }
+}
+
+private struct CalendarPanel: View {
+    @StateObject private var viewModel = CalendarPanelViewModel()
+    @State private var isRefreshHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            header
+
+            if viewModel.isLoading && viewModel.todayEvents.isEmpty && viewModel.upcomingEvents.isEmpty {
+                CalendarLoadingState()
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 16) {
+                        CalendarAvailabilityCard(
+                            summary: viewModel.availabilitySummary,
+                            events: viewModel.todayEvents
+                        )
+
+                        calendarSection(
+                            title: "Today",
+                            events: viewModel.todayEvents,
+                            emptyText: "No events on your calendar today"
+                        )
+                        calendarSection(
+                            title: "Next 30 Days",
+                            events: viewModel.upcomingEvents,
+                            emptyText: "No upcoming events found"
+                        )
+
+                        if let statusMessage = viewModel.statusMessage {
+                            Text(statusMessage)
+                                .font(.caption.weight(.medium))
+                                .foregroundStyle(.white.opacity(0.58))
+                                .padding(.top, 2)
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+        .padding(Layout.panelPadding)
+        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+        .task {
+            await viewModel.refresh()
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Layout.headerSpacing) {
+            Image(systemName: "calendar")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(AppColor.white)
+                .frame(width: Layout.appIconSize, height: Layout.appIconSize)
+                .background(AppColor.black.opacity(0.2), in: Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Calendar")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text(viewModel.headerSubtitle)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.56))
+            }
+
+            Spacer()
+
+            Button {
+                Task { await viewModel.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppColor.white)
+            }
+            .buttonStyle(.plain)
+            .frame(width: Layout.headerButtonSize, height: Layout.headerButtonSize)
+            .background(AppColor.black.opacity(isRefreshHovered ? 0.32 : 0.2), in: Circle())
+            .cursor(.pointingHand)
+            .onHover { isRefreshHovered = $0 }
+            .help("Refresh calendar")
+        }
+    }
+
+    private func calendarSection(title: String, events: [CalendarPanelEvent], emptyText: String) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.58))
+
+            if events.isEmpty {
+                Text(emptyText)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.66))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 14, style: .continuous))
+            } else {
+                VStack(spacing: 10) {
+                    ForEach(events) { event in
+                        CalendarEventRow(event: event)
+                    }
+                }
+            }
+        }
+    }
+}
+
+private struct CalendarLoadingState: View {
+    var body: some View {
+        VStack(spacing: 12) {
+            ProgressView()
+                .controlSize(.small)
+                .tint(AppColor.white)
+
+            Text("Reading your calendar")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.white.opacity(0.68))
+        }
+    }
+}
+
+private struct CalendarAvailabilityCard: View {
+    let summary: CalendarAvailabilitySummary
+    let events: [CalendarPanelEvent]
+
+    private var timelineEvents: [CalendarPanelEvent] {
+        Array(events.filter { !$0.isAllDay }.prefix(4))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack(spacing: 8) {
+                Image(systemName: "calendar")
+                    .font(.system(size: 10, weight: .bold))
+
+                Text("See my availability: today")
+                    .font(.caption.weight(.medium))
+
+                Spacer()
+            }
+            .foregroundStyle(.white.opacity(0.56))
+
+            VStack(alignment: .leading, spacing: 9) {
+                Text(summary.title)
+                    .font(.largeTitle.weight(.bold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.78)
+
+                Text(summary.subtitle)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(3)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            CalendarTimelinePreview(events: timelineEvents)
+
+            HStack(spacing: 10) {
+                CalendarActionButton(title: "Create Event")
+                CalendarActionButton(title: "Edit Event")
+                CalendarActionButton(title: "Full Calendar")
+            }
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.black.opacity(0.2), in: .rect(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppColor.white.opacity(0.12), lineWidth: 1)
+        }
+    }
+}
+
+private struct CalendarTimelinePreview: View {
+    let events: [CalendarPanelEvent]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if events.isEmpty {
+                HStack {
+                    Text("Today is open")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Spacer()
+
+                    Text("No scheduled blocks")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.52))
+                }
+                .padding(16)
+            } else {
+                ForEach(Array(events.enumerated()), id: \.element.id) { index, event in
+                    CalendarTimelineRow(event: event)
+
+                    if index < events.count - 1 {
+                        Divider()
+                            .overlay(AppColor.white.opacity(0.08))
+                            .padding(.leading, 70)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity)
+        .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 16, style: .continuous))
+        .overlay(alignment: .leading) {
+            Rectangle()
+                .fill(
+                    LinearGradient(
+                        colors: [.white.opacity(0.22), .white.opacity(0.02)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+                .frame(width: 1)
+                .padding(.leading, 70)
+                .padding(.vertical, 10)
+        }
+    }
+}
+
+private struct CalendarTimelineRow: View {
+    let event: CalendarPanelEvent
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(event.startTimeText)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white.opacity(0.54))
+                .frame(width: 52, alignment: .trailing)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(event.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                HStack(spacing: 8) {
+                    if let calendarName = event.calendarName {
+                        Text(calendarName)
+                            .lineLimit(1)
+                    }
+
+                    Text(event.durationText)
+                        .lineLimit(1)
+                }
+                .font(.caption.weight(.medium))
+                .foregroundStyle(.white.opacity(0.52))
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(event.color.opacity(0.28), in: .rect(cornerRadius: 12, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(event.color.opacity(0.36), lineWidth: 1)
+            }
+        }
+        .padding(.vertical, 7)
+        .padding(.trailing, 10)
+    }
+}
+
+private struct CalendarActionButton: View {
+    let title: String
+    @State private var isHovered = false
+
+    var body: some View {
+        Button(title) {}
+            .buttonStyle(.plain)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.82))
+            .padding(.horizontal, 16)
+            .padding(.vertical, 9)
+            .background(AppColor.black.opacity(isHovered ? 0.34 : 0.22), in: .rect(cornerRadius: 10, style: .continuous))
+            .cursor(.pointingHand)
+            .onHover { isHovered = $0 }
+    }
+}
+
+private struct CalendarEventRow: View {
+    let event: CalendarPanelEvent
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            VStack(spacing: 2) {
+                Text(event.dayText)
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(.white.opacity(0.58))
+
+                Text(event.dateText)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 44)
+            .padding(.vertical, 8)
+            .background(AppColor.black.opacity(0.22), in: .rect(cornerRadius: 12, style: .continuous))
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(event.title)
+                    .font(.headline.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(2)
+
+                Text(event.timeText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.62))
+
+                if let calendarName = event.calendarName {
+                    Text(calendarName)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.white.opacity(0.46))
+                        .lineLimit(1)
+                }
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(12)
+        .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 15, style: .continuous))
+        .overlay(alignment: .leading) {
+            RoundedRectangle(cornerRadius: 2)
+                .fill(event.color.opacity(0.86))
+                .frame(width: 3)
+                .padding(.vertical, 12)
+        }
+    }
+}
+
+@MainActor
+private final class CalendarPanelViewModel: ObservableObject {
+    @Published private(set) var todayEvents: [CalendarPanelEvent] = []
+    @Published private(set) var upcomingEvents: [CalendarPanelEvent] = []
+    @Published private(set) var statusMessage: String?
+    @Published private(set) var isLoading = false
+
+    private let reader = CalendarPanelReader()
+
+    var availabilitySummary: CalendarAvailabilitySummary {
+        CalendarAvailabilitySummary(events: todayEvents, now: Date())
+    }
+
+    var headerSubtitle: String {
+        if isLoading {
+            return "Reading your calendar"
+        }
+
+        let count = todayEvents.count + upcomingEvents.count
+        if count == 0 {
+            return Date().formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
+        }
+
+        return count == 1 ? "1 event from Calendar" : "\(count) events from Calendar"
+    }
+
+    func refresh() async {
+        isLoading = true
+        statusMessage = nil
+
+        do {
+            let snapshot = try await reader.snapshot()
+            todayEvents = snapshot.today
+            upcomingEvents = snapshot.upcoming
+            statusMessage = snapshot.statusMessage
+        } catch {
+            todayEvents = []
+            upcomingEvents = []
+            statusMessage = error.localizedDescription
+        }
+
+        isLoading = false
+    }
+}
+
+nonisolated private struct CalendarPanelSnapshot: Equatable {
+    let today: [CalendarPanelEvent]
+    let upcoming: [CalendarPanelEvent]
+    let statusMessage: String?
+}
+
+nonisolated private struct CalendarAvailabilitySummary: Equatable {
+    let title: String
+    let subtitle: String
+
+    init(events: [CalendarPanelEvent], now: Date) {
+        let calendar = Calendar.current
+        let timedEvents = events
+            .filter { !$0.isAllDay }
+            .sorted { $0.startDate < $1.startDate }
+
+        if let activeEvent = timedEvents.first(where: { $0.startDate <= now && $0.endDate > now }) {
+            title = "In \(activeEvent.title)"
+            subtitle = "You’re booked until \(activeEvent.endDate.formatted(date: .omitted, time: .shortened))."
+            return
+        }
+
+        if let nextEvent = timedEvents.first(where: { $0.startDate > now }) {
+            title = "Available until \(nextEvent.startDate.formatted(date: .omitted, time: .shortened))"
+            subtitle = "Next up: \(nextEvent.title) at \(nextEvent.startDate.formatted(date: .omitted, time: .shortened))."
+            return
+        }
+
+        if let endOfDay = calendar.date(bySettingHour: 23, minute: 59, second: 0, of: now), now < endOfDay {
+            title = "Available for the rest of today"
+            subtitle = "No more scheduled events are visible on your calendar."
+        } else {
+            title = "Today is wrapped"
+            subtitle = "Friday does not see anything else scheduled today."
+        }
+    }
+}
+
+nonisolated private struct CalendarPanelEvent: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let startDate: Date
+    let endDate: Date
+    let isAllDay: Bool
+    let calendarName: String?
+    let color: Color
+
+    var dayText: String {
+        startDate.formatted(.dateTime.weekday(.abbreviated)).uppercased()
+    }
+
+    var dateText: String {
+        startDate.formatted(.dateTime.day())
+    }
+
+    var timeText: String {
+        if isAllDay {
+            return "All day"
+        }
+
+        return "\(startDate.formatted(date: .omitted, time: .shortened)) - \(endDate.formatted(date: .omitted, time: .shortened))"
+    }
+
+    var startTimeText: String {
+        isAllDay ? "All day" : startDate.formatted(date: .omitted, time: .shortened)
+    }
+
+    var durationText: String {
+        guard !isAllDay else { return "All day" }
+
+        let minutes = max(1, Int(endDate.timeIntervalSince(startDate) / 60))
+        if minutes < 60 {
+            return "\(minutes)m"
+        }
+
+        let hours = minutes / 60
+        let remainder = minutes % 60
+        return remainder == 0 ? "\(hours)h" : "\(hours)h \(remainder)m"
+    }
+}
+
+private final class CalendarPanelReader {
+    func snapshot() async throws -> CalendarPanelSnapshot {
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            try await Self.requestCalendarAccessIfNeeded(using: eventStore)
+            eventStore.refreshSourcesIfNecessary()
+
+            let calendar = Calendar.current
+            let now = Date()
+            let startOfToday = calendar.startOfDay(for: now)
+            guard
+                let endOfToday = calendar.date(byAdding: .day, value: 1, to: startOfToday),
+                let endOfRange = calendar.date(byAdding: .day, value: 30, to: startOfToday)
+            else {
+                throw HomePanelDataError.invalidDateRange
+            }
+
+            let visibleCalendars = eventStore.calendars(for: .event)
+                .filter { $0.allowsContentModifications || $0.type == .subscription || $0.type == .calDAV || $0.type == .local || $0.type == .exchange }
+
+            let todayPredicate = eventStore.predicateForEvents(
+                withStart: startOfToday,
+                end: endOfToday,
+                calendars: visibleCalendars.isEmpty ? nil : visibleCalendars
+            )
+            let rangePredicate = eventStore.predicateForEvents(
+                withStart: endOfToday,
+                end: endOfRange,
+                calendars: visibleCalendars.isEmpty ? nil : visibleCalendars
+            )
+
+            let today = eventStore.events(matching: todayPredicate)
+                .sortedForDisplay()
+                .map(CalendarPanelEvent.init(event:))
+
+            let upcoming = eventStore.events(matching: rangePredicate)
+                .sortedForDisplay()
+                .prefix(40)
+                .map(CalendarPanelEvent.init(event:))
+
+            return CalendarPanelSnapshot(
+                today: today,
+                upcoming: Array(upcoming),
+                statusMessage: Self.statusMessage(today: today, upcoming: upcoming, calendarCount: visibleCalendars.count)
+            )
+        }.value
+    }
+
+    private nonisolated static func requestCalendarAccessIfNeeded(using eventStore: EKEventStore) async throws {
+        switch EKEventStore.authorizationStatus(for: .event) {
+        case .fullAccess:
+            return
+        case .notDetermined:
+            let isGranted = try await requestFullCalendarAccess(using: eventStore)
+            guard isGranted else { throw HomePanelDataError.calendarAccessDenied }
+        case .denied, .restricted, .writeOnly:
+            throw HomePanelDataError.calendarAccessDenied
+        @unknown default:
+            throw HomePanelDataError.calendarAccessDenied
+        }
+    }
+
+    private nonisolated static func requestFullCalendarAccess(using eventStore: EKEventStore) async throws -> Bool {
+        try await withCheckedThrowingContinuation { continuation in
+            eventStore.requestFullAccessToEvents { isGranted, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: isGranted)
+                }
+            }
+        }
+    }
+
+    private nonisolated static func statusMessage(
+        today: [CalendarPanelEvent],
+        upcoming: [CalendarPanelEvent],
+        calendarCount: Int
+    ) -> String? {
+        if calendarCount == 0 {
+            return "No macOS Calendar sources are visible to Friday."
+        }
+
+        if today.isEmpty && upcoming.isEmpty {
+            return "Friday can access Calendar, but did not find events in the next 30 days."
+        }
+
+        return nil
+    }
+}
+
+nonisolated private extension CalendarPanelEvent {
+    init(event: EKEvent) {
+        self.init(
+            id: [
+                event.eventIdentifier,
+                event.calendarItemIdentifier,
+                String(event.startDate.timeIntervalSince1970),
+            ]
+            .compactMap { $0 }
+            .joined(separator: "-"),
+            title: event.title ?? "Untitled",
+            startDate: event.startDate,
+            endDate: event.endDate,
+            isAllDay: event.isAllDay,
+            calendarName: event.calendar?.title,
+            color: Color(nsColor: NSColor(cgColor: event.calendar.cgColor) ?? .systemBlue)
+        )
+    }
+}
+
+nonisolated private extension Array where Element == EKEvent {
+    func sortedForDisplay() -> [EKEvent] {
+        sorted {
+            if $0.isAllDay != $1.isAllDay {
+                return $0.isAllDay && !$1.isAllDay
+            }
+
+            return $0.startDate < $1.startDate
         }
     }
 }
@@ -5478,6 +7089,400 @@ private struct PanelItem: Identifiable {
     var id: String { title }
 }
 
+private struct HomeMailPreviewCard: View {
+    let summary: HomeMailSummary
+
+    private var subjectText: String {
+        if let statusMessage = summary.statusMessage {
+            return statusMessage
+        }
+
+        return summary.latestSubject ?? "No unread messages"
+    }
+
+    private var detailText: String {
+        if summary.statusMessage != nil {
+            return "Open Mail and allow automation if macOS asks."
+        }
+
+        if summary.unreadCount > 0 {
+            return summary.unreadCount == 1 ? "1 unread message" : "\(summary.unreadCount) unread messages"
+        }
+
+        return "Inbox is quiet right now."
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Layout.contentRowSpacing) {
+            Image(systemName: "envelope")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.88))
+                .frame(width: Layout.contentIconSize, height: Layout.contentIconSize)
+                .background(AppColor.black.opacity(0.2), in: Circle())
+
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Mail")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Spacer()
+
+                    Text("Inbox")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.46))
+                }
+
+                Text(subjectText)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Text(detailText)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.66))
+                    .lineLimit(2)
+            }
+        }
+        .padding(16)
+        .background(AppColor.black.opacity(0.2), in: .rect(cornerRadius: Layout.contentRowCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Layout.contentRowCornerRadius, style: .continuous)
+                .stroke(AppColor.white.opacity(0.1), lineWidth: 1)
+        }
+    }
+}
+
+private struct HomeLocationMapIsland: View {
+    let recommendation: HomeLocationRecommendation
+    @StateObject private var viewModel: HomeLocationMapViewModel
+
+    init(recommendation: HomeLocationRecommendation) {
+        self.recommendation = recommendation
+        _viewModel = StateObject(wrappedValue: HomeLocationMapViewModel(recommendation: recommendation))
+    }
+
+    var body: some View {
+        ZStack {
+            if let coordinate = viewModel.coordinate {
+                HomeAppleMapPreview(
+                    title: recommendation.locationName,
+                    coordinate: coordinate
+                )
+            } else {
+                AppColor.black.opacity(0.22)
+            }
+        }
+        .frame(width: Layout.locationMapIslandWidth, height: Layout.panelHeight)
+        .clipShape(.rect(cornerRadius: Layout.panelCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Layout.panelCornerRadius, style: .continuous)
+                .stroke(AppColor.white.opacity(0.2), lineWidth: 1)
+        }
+        .shadow(color: AppColor.black.opacity(0.24), radius: 18, x: 0, y: 14)
+        .task(id: recommendation.query) {
+            await viewModel.resolve(recommendation: recommendation)
+        }
+    }
+}
+
+@MainActor
+private final class HomeLocationMapViewModel: ObservableObject {
+    @Published private(set) var coordinate: CLLocationCoordinate2D?
+
+    init(recommendation: HomeLocationRecommendation) {
+        coordinate = recommendation.coordinate
+    }
+
+    func resolve(recommendation: HomeLocationRecommendation) async {
+        if let coordinate = recommendation.coordinate {
+            self.coordinate = coordinate
+            return
+        }
+
+        coordinate = nil
+
+        let request = MKLocalSearch.Request()
+        request.naturalLanguageQuery = recommendation.query
+
+        do {
+            let response = try await MKLocalSearch(request: request).start()
+            coordinate = response.mapItems.first?.placemark.coordinate
+        } catch {
+            coordinate = nil
+        }
+    }
+}
+
+private struct HomeLocationPreviewCard: View {
+    let recommendation: HomeLocationRecommendation
+    @State private var isDirectionsHovered = false
+    @State private var isDetailsHovered = false
+    @State private var isNearbyHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            locationHeader
+
+            HomeAppleMapPreview(
+                title: recommendation.locationName,
+                coordinate: recommendation.coordinate ?? CLLocationCoordinate2D(latitude: 37.3349, longitude: -122.0090)
+            )
+                .frame(height: 118)
+                .clipShape(.rect(cornerRadius: 0))
+
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 7) {
+                    Text(recommendation.title)
+                        .font(.title2.weight(.bold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+
+                    Text(recommendation.subtitle)
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.74))
+                        .lineLimit(2)
+
+                    if let address = recommendation.address {
+                        Text(address)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.5))
+                            .lineLimit(2)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    locationButton(
+                        "Get directions",
+                        systemName: "location.fill",
+                        isHovered: $isDirectionsHovered
+                    ) {
+                        openMaps(mode: .directions)
+                    }
+
+                    locationButton(
+                        "See details",
+                        systemName: "info.circle",
+                        isHovered: $isDetailsHovered
+                    ) {
+                        openMaps(mode: .details)
+                    }
+
+                    locationButton(
+                        "Find nearby",
+                        systemName: "magnifyingglass",
+                        isHovered: $isNearbyHovered
+                    ) {
+                        openMaps(mode: .nearby)
+                    }
+                }
+            }
+            .padding(18)
+        }
+        .background(AppColor.black.opacity(0.2), in: .rect(cornerRadius: 22, style: .continuous))
+        .clipShape(.rect(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppColor.white.opacity(0.12), lineWidth: 1)
+        }
+    }
+
+    private var locationHeader: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "mappin.and.ellipse")
+                .font(.system(size: 10, weight: .bold))
+
+            Text("\(recommendation.locationName) · Location")
+                .font(.caption.weight(.medium))
+                .lineLimit(1)
+
+            Spacer()
+
+            Image(systemName: "mic.fill")
+                .font(.system(size: 12, weight: .semibold))
+        }
+        .foregroundStyle(.white.opacity(0.56))
+        .padding(.horizontal, 16)
+        .padding(.vertical, 12)
+    }
+
+    private func locationButton(
+        _ title: String,
+        systemName: String,
+        isHovered: Binding<Bool>,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: systemName)
+                    .font(.system(size: 10, weight: .bold))
+
+                Text(title)
+                    .lineLimit(1)
+            }
+        }
+        .buttonStyle(.plain)
+        .font(.caption.weight(.semibold))
+        .foregroundStyle(.white.opacity(0.82))
+        .padding(.horizontal, 13)
+        .padding(.vertical, 9)
+        .background(AppColor.black.opacity(isHovered.wrappedValue ? 0.34 : 0.22), in: .rect(cornerRadius: 10, style: .continuous))
+        .cursor(.pointingHand)
+        .onHover { isHovered.wrappedValue = $0 }
+    }
+
+    private func openMaps(mode: MapOpenMode) {
+        let query: String
+        switch mode {
+        case .directions:
+            query = "http://maps.apple.com/?daddr=\(encodedMapQuery)"
+        case .details:
+            query = "http://maps.apple.com/?q=\(encodedMapQuery)"
+        case .nearby:
+            query = "http://maps.apple.com/?q=\(encodedNearbyQuery)"
+        }
+
+        guard let url = URL(string: query) else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    private var encodedMapQuery: String {
+        recommendation.query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? recommendation.query
+    }
+
+    private var encodedNearbyQuery: String {
+        "places near \(recommendation.query)".addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? recommendation.query
+    }
+
+    private enum MapOpenMode {
+        case directions
+        case details
+        case nearby
+    }
+}
+
+private struct HomeAppleMapPreview: View {
+    let title: String
+    let coordinate: CLLocationCoordinate2D
+
+    private var region: MKCoordinateRegion {
+        MKCoordinateRegion(
+            center: coordinate,
+            span: MKCoordinateSpan(latitudeDelta: 0.012, longitudeDelta: 0.012)
+        )
+    }
+
+    var body: some View {
+        Map(initialPosition: .region(region)) {
+            Marker(title, coordinate: coordinate)
+        }
+        .mapStyle(.standard(elevation: .flat))
+        .allowsHitTesting(false)
+    }
+}
+
+private struct FocusCard: View {
+    let title: String
+    let subtitle: String
+    let image: NSImage?
+    let isGenerating: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                if let image {
+                    Image(nsImage: image)
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    FocusPlaceholderImage()
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .clipped()
+
+            LinearGradient(
+                colors: [
+                    AppColor.black.opacity(0.08),
+                    AppColor.black.opacity(0.58),
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack(spacing: 8) {
+                    Image(systemName: "scope")
+                        .font(.system(size: 13, weight: .semibold))
+
+                    Text(title)
+                        .font(.headline.weight(.semibold))
+                }
+                .foregroundStyle(.white)
+
+                Text(subtitle)
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.78))
+                    .lineLimit(2)
+            }
+            .padding(16)
+        }
+        .frame(height: Layout.focusCardHeight)
+        .clipShape(.rect(cornerRadius: Layout.contentRowCornerRadius, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: Layout.contentRowCornerRadius, style: .continuous)
+                .stroke(AppColor.white.opacity(0.14), lineWidth: 1)
+        }
+    }
+}
+
+private struct FocusPlaceholderImage: View {
+    var body: some View {
+        ZStack {
+            AppColor.black.opacity(0.92)
+
+            TimelineView(.animation) { timeline in
+                let time = timeline.date.timeIntervalSinceReferenceDate
+                ZStack {
+                    focusShape(
+                        color: Color(red: 0.1, green: 0.9, blue: 0.62),
+                        size: 260,
+                        x: 120 + sin(time * 0.55) * 34,
+                        y: 50 + cos(time * 0.5) * 18,
+                        rotation: time * 10
+                    )
+
+                    focusShape(
+                        color: Color(red: 0.22, green: 0.36, blue: 1),
+                        size: 380,
+                        x: 220 + cos(time * 0.45) * 40,
+                        y: 95 + sin(time * 0.6) * 24,
+                        rotation: -time * 8
+                    )
+
+                    focusShape(
+                        color: Color(red: 0.35, green: 0.22, blue: 1),
+                        size: 300,
+                        x: 340 + sin(time * 0.62) * 32,
+                        y: 128 + cos(time * 0.52) * 18,
+                        rotation: time * 12
+                    )
+                }
+                .blur(radius: 0.5)
+            }
+        }
+    }
+
+    private func focusShape(color: Color, size: CGFloat, x: CGFloat, y: CGFloat, rotation: Double) -> some View {
+        RoundedRectangle(cornerRadius: 58, style: .continuous)
+            .fill(color.opacity(0.56))
+            .frame(width: size, height: size * 0.58)
+            .rotationEffect(.degrees(rotation))
+            .offset(x: x - 250, y: y - 120)
+            .blendMode(.screen)
+    }
+}
+
 private struct ContentRow: View {
     let item: PanelItem
 
@@ -5665,8 +7670,8 @@ private enum AppColor {
 }
 
 private enum Layout {
-    static let minimumWindowWidth: CGFloat = 1460
-    static let minimumWindowHeight: CGFloat = 680
+    static let minimumWindowWidth: CGFloat = 1740
+    static let minimumWindowHeight: CGFloat = 800
     static let windowPadding: CGFloat = 34
 
     static let sidebarSpacing: CGFloat = 14
@@ -5676,8 +7681,8 @@ private enum Layout {
     static let sidebarVerticalPadding: CGFloat = 18
     static let sidebarHorizontalPadding: CGFloat = 8
 
-    static let panelWidth: CGFloat = 760
-    static let panelHeight: CGFloat = 560
+    static let panelWidth: CGFloat = 980
+    static let panelHeight: CGFloat = 680
     static let homePanelWidth: CGFloat = 560
     static let homePanelHeight: CGFloat = 540
     static let panelSpacing: CGFloat = 18
@@ -5705,9 +7710,11 @@ private enum Layout {
     static let contentRowCornerRadius: CGFloat = 14
     static let contentIconSize: CGFloat = 32
     static let contentTextSpacing: CGFloat = 2
+    static let focusCardHeight: CGFloat = 220
+    static let locationMapIslandWidth: CGFloat = 476
 
-    static let contentAreaWidth: CGFloat = 1250
-    static let contentAreaHeight: CGFloat = 560
+    static let contentAreaWidth: CGFloat = 1530
+    static let contentAreaHeight: CGFloat = 680
 
     static let browserWorkspaceWidth: CGFloat = 1250
     static let browserIslandSpacing: CGFloat = 14
