@@ -12,6 +12,7 @@ import PDFKit
 import Security
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 #if canImport(FoundationModels)
 import FoundationModels
@@ -49,6 +50,9 @@ struct ContentView: View {
                         subtitle: "Upcoming events, schedule gaps, and meeting prep will live here."
                     )
                     .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
+                case .stocks:
+                    StockMarketPanel()
+                        .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
                 case .saved:
                     StubPanel(
                         systemName: "bookmark",
@@ -102,23 +106,36 @@ private struct MainGlassPanel: View {
     }
 
     var body: some View {
-        ZStack {
-            if isConversationPresented {
-                FridayConversationPanel(
+        Group {
+            if let browserSession = viewModel.browserSession {
+                BrowserWorkspace(
                     viewModel: viewModel,
-                    isPresented: $isConversationPresented,
-                    namespace: panelAnimation
+                    session: browserSession,
+                    namespace: panelAnimation,
+                    closeBrowser: closeBrowser
                 )
                 .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
             } else {
-                homeContent
-                    .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
+                ZStack {
+                    if isConversationPresented {
+                        FridayConversationPanel(
+                            viewModel: viewModel,
+                            isPresented: $isConversationPresented,
+                            namespace: panelAnimation
+                        )
+                        .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
+                    } else {
+                        homeContent
+                            .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
+                    }
+                }
+                .padding(Layout.panelPadding)
+                .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+                .glassSurface(cornerRadius: Layout.panelCornerRadius)
             }
         }
-        .padding(Layout.panelPadding)
-        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
-        .glassSurface(cornerRadius: Layout.panelCornerRadius)
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: isConversationPresented)
+        .animation(.spring(response: 0.34, dampingFraction: 0.86), value: viewModel.browserSession?.id)
         .task {
             dataProvider.refresh()
             viewModel.start()
@@ -198,6 +215,13 @@ private struct MainGlassPanel: View {
         }
 
         viewModel.sendPrompt()
+    }
+
+    private func closeBrowser() {
+        withAnimation(.spring(response: 0.34, dampingFraction: 0.86)) {
+            viewModel.closeBrowser()
+            isConversationPresented = true
+        }
     }
 
     private var contextItems: [PanelItem] {
@@ -426,8 +450,209 @@ private struct FridayConversationPanel: View {
     }
 }
 
+private struct BrowserWorkspace: View {
+    @ObservedObject var viewModel: FridayPanelChatViewModel
+    let session: FridayBrowserSession
+    let namespace: Namespace.ID
+    let closeBrowser: () -> Void
+
+    var body: some View {
+        HStack(alignment: .center, spacing: Layout.browserIslandSpacing) {
+            BrowserIsland(session: session, closeBrowser: closeBrowser)
+
+            FridayBrowserChatIsland(
+                viewModel: viewModel,
+                namespace: namespace
+            )
+        }
+        .frame(width: Layout.browserWorkspaceWidth, height: Layout.panelHeight)
+    }
+}
+
+private struct BrowserIsland: View {
+    let session: FridayBrowserSession
+    let closeBrowser: () -> Void
+
+    @State private var isCloseHovered = false
+    @State private var isReloadHovered = false
+
+    var body: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 9) {
+                Button(action: closeBrowser) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(AppColor.white)
+                }
+                .buttonStyle(.plain)
+                .frame(width: Layout.headerButtonSize, height: Layout.headerButtonSize)
+                .background(AppColor.black.opacity(isCloseHovered ? 0.32 : 0.2), in: Circle())
+                .cursor(.pointingHand)
+                .onHover { isCloseHovered = $0 }
+                .help("Close browser")
+
+                Image(systemName: "globe")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.white.opacity(0.82))
+
+                Text(session.displayHost)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.76))
+                    .lineLimit(1)
+
+                Spacer()
+
+                Button(action: session.reload) {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(AppColor.white)
+                }
+                .buttonStyle(.plain)
+                .frame(width: Layout.headerButtonSize, height: Layout.headerButtonSize)
+                .background(AppColor.black.opacity(isReloadHovered ? 0.32 : 0.2), in: Circle())
+                .cursor(.pointingHand)
+                .onHover { isReloadHovered = $0 }
+                .help("Reload")
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 42)
+            .background(AppColor.black.opacity(0.22), in: .rect(cornerRadius: 14, style: .continuous))
+
+            FridayWebView(session: session)
+                .clipShape(.rect(cornerRadius: 18, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 18, style: .continuous)
+                        .stroke(AppColor.white.opacity(0.12), lineWidth: 1)
+                }
+        }
+        .padding(Layout.browserPanelPadding)
+        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+    }
+}
+
+private struct FridayBrowserChatIsland: View {
+    @ObservedObject var viewModel: FridayPanelChatViewModel
+    let namespace: Namespace.ID
+
+    @FocusState private var isPromptFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 10) {
+                Circle()
+                    .fill(AppColor.black.opacity(0.2))
+                    .frame(width: Layout.appIconSize, height: Layout.appIconSize)
+                    .overlay {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(AppColor.white)
+                    }
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text("Friday")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text("Browser control")
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.56))
+                }
+
+                Spacer()
+            }
+            .padding(.bottom, 10)
+
+            ScrollViewReader { proxy in
+                ScrollView {
+                    LazyVStack(spacing: Layout.chatMessageSpacing) {
+                        ForEach(viewModel.messages) { message in
+                            ChatMessageRow(message: message, compact: true)
+                                .id(message.id)
+                        }
+
+                        if viewModel.isResponding {
+                            FridayTypingRow()
+                                .id("fridayTyping")
+                        }
+                    }
+                    .padding(.top, 6)
+                    .padding(.bottom, 12)
+                }
+                .scrollIndicators(.hidden)
+                .onChange(of: viewModel.messages) { _, messages in
+                    guard let lastMessage = messages.last else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo(lastMessage.id, anchor: .bottom)
+                    }
+                }
+                .onChange(of: viewModel.isResponding) { _, isResponding in
+                    guard isResponding else { return }
+                    withAnimation(.easeOut(duration: 0.2)) {
+                        proxy.scrollTo("fridayTyping", anchor: .bottom)
+                    }
+                }
+            }
+
+            PromptField(
+                text: $viewModel.prompt,
+                placeholder: "Tell Friday what to do next",
+                isFocused: $isPromptFocused,
+                namespace: namespace,
+                matchedGeometryID: "browserFridayPrompt",
+                onSubmit: viewModel.sendPrompt
+            )
+        }
+        .padding(Layout.browserChatPadding)
+        .frame(width: Layout.browserChatWidth, height: Layout.panelHeight)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+        .onAppear {
+            isPromptFocused = true
+        }
+    }
+}
+
+private struct FridayWebView: NSViewRepresentable {
+    @ObservedObject var session: FridayBrowserSession
+
+    func makeNSView(context: Context) -> WKWebView {
+        let configuration = WKWebViewConfiguration()
+        configuration.websiteDataStore = .default()
+        let webView = WKWebView(frame: .zero, configuration: configuration)
+        webView.navigationDelegate = context.coordinator
+        webView.allowsBackForwardNavigationGestures = true
+        webView.setValue(false, forKey: "drawsBackground")
+        session.attach(webView)
+        webView.load(URLRequest(url: session.url))
+        return webView
+    }
+
+    func updateNSView(_ webView: WKWebView, context: Context) {
+        session.attach(webView)
+        guard webView.url != session.url else { return }
+        webView.load(URLRequest(url: session.url))
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(session: session)
+    }
+
+    final class Coordinator: NSObject, WKNavigationDelegate {
+        let session: FridayBrowserSession
+
+        init(session: FridayBrowserSession) {
+            self.session = session
+        }
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            session.updateCurrentURL(webView.url)
+        }
+    }
+}
+
 private struct ChatMessageRow: View {
     let message: FridayPanelChatMessage
+    var compact = false
 
     private let horizontalInset: CGFloat = 54
 
@@ -438,7 +663,7 @@ private struct ChatMessageRow: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             if isUser {
-                Spacer(minLength: horizontalInset)
+                Spacer(minLength: compact ? 18 : horizontalInset)
             }
 
             VStack(alignment: .leading, spacing: 10) {
@@ -464,7 +689,7 @@ private struct ChatMessageRow: View {
             }
 
             if !isUser {
-                Spacer(minLength: horizontalInset)
+                Spacer(minLength: compact ? 18 : horizontalInset)
             }
         }
         .frame(maxWidth: .infinity, alignment: isUser ? .trailing : .leading)
@@ -722,6 +947,7 @@ private final class FridayPanelChatViewModel: ObservableObject {
     @Published private(set) var modelStatusText = "Ready"
     @Published private(set) var contextItems: [FridayContextItem] = []
     @Published private(set) var savedMemoryNotice: FridaySavedMemoryNotice?
+    @Published private(set) var browserSession: FridayBrowserSession?
 
     private let store: FridayAssistantStore
     private let assistant: FridayPanelAssistantService
@@ -746,6 +972,17 @@ private final class FridayPanelChatViewModel: ObservableObject {
 
         prompt = ""
         messages.append(FridayPanelChatMessage(role: .user, text: trimmedPrompt))
+
+        if let browserRequest = FridayBrowserRequestDetector.request(from: trimmedPrompt) {
+            openBrowser(for: browserRequest)
+            return
+        }
+
+        if let browserSession, let command = FridayBrowserCommandDetector.command(from: trimmedPrompt) {
+            performBrowserCommand(command, in: browserSession)
+            return
+        }
+
         isResponding = true
         modelStatusText = "Thinking"
 
@@ -787,6 +1024,36 @@ private final class FridayPanelChatViewModel: ObservableObject {
         let urls = FridayContextPicker.pickFiles()
         guard !urls.isEmpty else { return }
         attachContext(from: urls)
+    }
+
+    func closeBrowser() {
+        browserSession = nil
+    }
+
+    private func openBrowser(for request: FridayBrowserRequest) {
+        if let existingSession = browserSession {
+            existingSession.navigate(to: request.url, userRequest: request.originalText)
+        } else {
+            browserSession = FridayBrowserSession(url: request.url, userRequest: request.originalText)
+        }
+
+        messages.append(
+            FridayPanelChatMessage(
+                role: .friday,
+                text: "I opened \(request.displayName) in the main glass. I can help you navigate it here. For purchases, orders, payments, or anything externally visible, I’ll ask you to confirm before the final action."
+            )
+        )
+        modelStatusText = "Browser"
+    }
+
+    private func performBrowserCommand(_ command: FridayBrowserCommand, in session: FridayBrowserSession) {
+        modelStatusText = "Using browser"
+
+        Task {
+            let result = await session.perform(command)
+            messages.append(FridayPanelChatMessage(role: .friday, text: result.message))
+            modelStatusText = "Browser"
+        }
     }
 
     private func attachContext(from urls: [URL]) {
@@ -1051,6 +1318,382 @@ private nonisolated enum FridayPanelChatRole: Equatable {
         case .friday:
             "Friday"
         }
+    }
+}
+
+@MainActor
+private final class FridayBrowserSession: ObservableObject, Identifiable {
+    let id = UUID()
+    @Published private(set) var url: URL
+    @Published private(set) var userRequest: String
+
+    private weak var webView: WKWebView?
+
+    init(url: URL, userRequest: String) {
+        self.url = url
+        self.userRequest = userRequest
+    }
+
+    var displayHost: String {
+        url.host(percentEncoded: false) ?? url.absoluteString
+    }
+
+    func attach(_ webView: WKWebView) {
+        self.webView = webView
+    }
+
+    func navigate(to url: URL, userRequest: String) {
+        self.url = url
+        self.userRequest = userRequest
+        webView?.load(URLRequest(url: url))
+    }
+
+    func reload() {
+        webView?.reload()
+    }
+
+    func updateCurrentURL(_ url: URL?) {
+        guard let url, self.url != url else { return }
+        self.url = url
+    }
+
+    func perform(_ command: FridayBrowserCommand) async -> FridayBrowserCommandResult {
+        guard webView != nil else {
+            return FridayBrowserCommandResult(message: "The browser is still loading. Try that again in a moment.")
+        }
+
+        do {
+            let didComplete = try await evaluateBooleanJavaScript(command.javaScript)
+            if didComplete {
+                return FridayBrowserCommandResult(message: command.successMessage)
+            }
+
+            return FridayBrowserCommandResult(message: command.failureMessage)
+        } catch {
+            return FridayBrowserCommandResult(message: "I could not complete that browser action: \(error.localizedDescription)")
+        }
+    }
+
+    private func evaluateBooleanJavaScript(_ javaScript: String) async throws -> Bool {
+        guard let webView else { return false }
+
+        return try await withCheckedThrowingContinuation { continuation in
+            webView.evaluateJavaScript(javaScript) { value, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                    return
+                }
+
+                continuation.resume(returning: (value as? Bool) == true)
+            }
+        }
+    }
+}
+
+private nonisolated struct FridayBrowserCommandResult: Equatable {
+    let message: String
+}
+
+private nonisolated enum FridayBrowserCommand: Equatable {
+    case click(String)
+    case type(String)
+    case search(String)
+    case pressEnter
+
+    var javaScript: String {
+        switch self {
+        case .click(let text):
+            """
+            (() => {
+              const needle = \(Self.javaScriptString(text)).toLowerCase();
+              const visible = (element) => {
+                const rect = element.getBoundingClientRect();
+                const style = window.getComputedStyle(element);
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+              };
+              const label = (element) => [
+                element.innerText,
+                element.value,
+                element.getAttribute('aria-label'),
+                element.getAttribute('title'),
+                element.getAttribute('placeholder')
+              ].filter(Boolean).join(' ').toLowerCase();
+              const candidates = Array.from(document.querySelectorAll('a, button, [role="button"], input[type="submit"], input[type="button"], summary, [onclick]'));
+              const element = candidates.find((candidate) => visible(candidate) && label(candidate).includes(needle));
+              if (!element) { return false; }
+              element.scrollIntoView({ block: 'center', inline: 'center' });
+              element.click();
+              return true;
+            })();
+            """
+        case .type(let text):
+            """
+            (() => {
+              const value = \(Self.javaScriptString(text));
+              const editable = (element) => element && (
+                element.tagName === 'TEXTAREA' ||
+                element.isContentEditable ||
+                (element.tagName === 'INPUT' && !['button','submit','checkbox','radio','hidden'].includes((element.type || '').toLowerCase()))
+              );
+              let element = editable(document.activeElement) ? document.activeElement : null;
+              if (!element) {
+                element = Array.from(document.querySelectorAll('input[type="search"], input[type="text"], input:not([type]), textarea, [contenteditable="true"]'))
+                  .find((candidate) => candidate.offsetWidth > 0 && candidate.offsetHeight > 0);
+              }
+              if (!element) { return false; }
+              element.focus();
+              if (element.isContentEditable) {
+                element.textContent = value;
+              } else {
+                element.value = value;
+              }
+              element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+              element.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            })();
+            """
+        case .search(let text):
+            """
+            (() => {
+              const value = \(Self.javaScriptString(text));
+              const element = Array.from(document.querySelectorAll('input[type="search"], input[name="q"], input[type="text"], input:not([type]), textarea'))
+                .find((candidate) => candidate.offsetWidth > 0 && candidate.offsetHeight > 0);
+              if (!element) { return false; }
+              element.focus();
+              element.value = value;
+              element.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: value }));
+              const form = element.form || element.closest('form');
+              if (form) {
+                form.requestSubmit ? form.requestSubmit() : form.submit();
+              } else {
+                element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+              }
+              return true;
+            })();
+            """
+        case .pressEnter:
+            """
+            (() => {
+              const element = document.activeElement;
+              if (!element) { return false; }
+              const form = element.form || element.closest('form');
+              if (form) {
+                form.requestSubmit ? form.requestSubmit() : form.submit();
+                return true;
+              }
+              element.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', bubbles: true }));
+              element.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', code: 'Enter', bubbles: true }));
+              return true;
+            })();
+            """
+        }
+    }
+
+    var successMessage: String {
+        switch self {
+        case .click(let text):
+            "I clicked “\(text)” on the page."
+        case .type(let text):
+            "I typed “\(text)” into the active field."
+        case .search(let text):
+            "I searched for “\(text)” on the page."
+        case .pressEnter:
+            "I pressed Enter on the page."
+        }
+    }
+
+    var failureMessage: String {
+        switch self {
+        case .click(let text):
+            "I could not find a visible clickable control matching “\(text)”."
+        case .type:
+            "I could not find a visible text field to type into."
+        case .search:
+            "I could not find a visible search field on this page."
+        case .pressEnter:
+            "I could not find an active page element to press Enter on."
+        }
+    }
+
+    private static func javaScriptString(_ value: String) -> String {
+        guard
+            let data = try? JSONSerialization.data(withJSONObject: [value]),
+            let string = String(data: data, encoding: .utf8),
+            string.count >= 2
+        else {
+            return "\"\""
+        }
+
+        return String(string.dropFirst().dropLast())
+    }
+}
+
+private nonisolated enum FridayBrowserCommandDetector {
+    static func command(from text: String) -> FridayBrowserCommand? {
+        let trimmedText = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        let lowercasedText = trimmedText.lowercased()
+
+        if lowercasedText == "press enter" || lowercasedText == "hit enter" || lowercasedText == "submit" {
+            return .pressEnter
+        }
+
+        if let value = quotedValue(in: trimmedText), lowercasedText.contains("click") || lowercasedText.contains("tap") || lowercasedText.contains("select") {
+            return .click(value)
+        }
+
+        if let value = quotedValue(in: trimmedText), lowercasedText.contains("type") || lowercasedText.contains("enter") || lowercasedText.contains("fill") {
+            return .type(value)
+        }
+
+        if let value = quotedValue(in: trimmedText), lowercasedText.contains("search") {
+            return .search(value)
+        }
+
+        if let value = value(afterAny: ["click ", "tap ", "select "], in: trimmedText) {
+            return .click(value)
+        }
+
+        if let value = value(afterAny: ["type ", "enter ", "fill "], in: trimmedText) {
+            return .type(value)
+        }
+
+        if let value = value(afterAny: ["search for ", "search "], in: trimmedText) {
+            return .search(value)
+        }
+
+        return nil
+    }
+
+    private static func quotedValue(in text: String) -> String? {
+        let pattern = #""([^"]+)"|'([^']+)'|“([^”]+)”"#
+        guard
+            let regex = try? NSRegularExpression(pattern: pattern),
+            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text))
+        else {
+            return nil
+        }
+
+        for index in 1..<match.numberOfRanges {
+            guard
+                match.range(at: index).location != NSNotFound,
+                let range = Range(match.range(at: index), in: text)
+            else {
+                continue
+            }
+
+            return String(text[range]).trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        }
+
+        return nil
+    }
+
+    private static func value(afterAny prefixes: [String], in text: String) -> String? {
+        let lowercasedText = text.lowercased()
+        for prefix in prefixes {
+            guard let range = lowercasedText.range(of: prefix) else { continue }
+            let value = text[range.upperBound...]
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+                .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            return value.isEmpty ? nil : value
+        }
+
+        return nil
+    }
+}
+
+private nonisolated struct FridayBrowserRequest: Equatable {
+    let url: URL
+    let originalText: String
+
+    var displayName: String {
+        url.host(percentEncoded: false) ?? url.absoluteString
+    }
+}
+
+private nonisolated enum FridayBrowserRequestDetector {
+    static func request(from text: String) -> FridayBrowserRequest? {
+        let trimmedText = text.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard shouldUseBrowser(trimmedText) else { return nil }
+
+        if let explicitURL = explicitURL(in: trimmedText) {
+            return FridayBrowserRequest(url: explicitURL, originalText: trimmedText)
+        }
+
+        let lowercasedText = trimmedText.lowercased()
+        if lowercasedText.contains("doordash") || lowercasedText.contains("door dash") {
+            return FridayBrowserRequest(url: URL(string: "https://www.doordash.com/")!, originalText: trimmedText)
+        }
+
+        if lowercasedText.contains("uber eats") || lowercasedText.contains("ubereats") {
+            return FridayBrowserRequest(url: URL(string: "https://www.ubereats.com/")!, originalText: trimmedText)
+        }
+
+        if lowercasedText.contains("amazon") {
+            return FridayBrowserRequest(url: URL(string: "https://www.amazon.com/")!, originalText: trimmedText)
+        }
+
+        if lowercasedText.contains("google") {
+            return FridayBrowserRequest(url: URL(string: "https://www.google.com/search?q=\(queryComponent(from: trimmedText))")!, originalText: trimmedText)
+        }
+
+        if lowercasedText.contains("search") || lowercasedText.contains("look up") || lowercasedText.contains("find ") {
+            return FridayBrowserRequest(url: URL(string: "https://www.google.com/search?q=\(queryComponent(from: trimmedText))")!, originalText: trimmedText)
+        }
+
+        return FridayBrowserRequest(url: URL(string: "https://www.google.com/search?q=\(queryComponent(from: trimmedText))")!, originalText: trimmedText)
+    }
+
+    private static func shouldUseBrowser(_ text: String) -> Bool {
+        let lowercasedText = text.lowercased()
+
+        if explicitURL(in: text) != nil {
+            return true
+        }
+
+        return [
+            "open browser",
+            "open a browser",
+            "open website",
+            "go to ",
+            "look at ",
+            "look up ",
+            "search web",
+            "search online",
+            "website",
+            "doordash",
+            "door dash",
+            "order food",
+            "uber eats",
+            "amazon",
+        ].contains { lowercasedText.contains($0) }
+    }
+
+    private static func explicitURL(in text: String) -> URL? {
+        let detector = try? NSDataDetector(types: NSTextCheckingResult.CheckingType.link.rawValue)
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        guard let match = detector?.firstMatch(in: text, options: [], range: range), let url = match.url else {
+            return domainURL(in: text)
+        }
+
+        return url
+    }
+
+    private static func domainURL(in text: String) -> URL? {
+        let pattern = #"(?i)\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:/[^\s]*)?\b"#
+        guard
+            let regex = try? NSRegularExpression(pattern: pattern),
+            let match = regex.firstMatch(in: text, range: NSRange(text.startIndex..<text.endIndex, in: text)),
+            let range = Range(match.range, in: text)
+        else {
+            return nil
+        }
+
+        let value = String(text[range])
+        return URL(string: value.hasPrefix("http") ? value : "https://\(value)")
+    }
+
+    private static func queryComponent(from text: String) -> String {
+        text.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? text
     }
 }
 
@@ -2597,6 +3240,16 @@ private nonisolated extension String {
     func prefixString(_ count: Int) -> String {
         String(prefix(count))
     }
+
+    var cleanedRSSString: String {
+        replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "&amp;", with: "&")
+            .replacingOccurrences(of: "&quot;", with: "\"")
+            .replacingOccurrences(of: "&#39;", with: "'")
+            .replacingOccurrences(of: "&apos;", with: "'")
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+    }
 }
 
 @MainActor
@@ -3077,6 +3730,558 @@ private struct SettingsStatRow: View {
 
     var body: some View {
         ContentRow(item: .init(systemName: systemName, title: title, subtitle: subtitle))
+    }
+}
+
+private struct StockMarketPanel: View {
+    @StateObject private var viewModel = StockMarketViewModel()
+    @State private var tickerText = "AAPL"
+    @State private var isRefreshHovered = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            header
+            rangeSelector
+
+            HStack(alignment: .top, spacing: 18) {
+                VStack(alignment: .leading, spacing: 14) {
+                    priceHeader
+                    StockChartView(points: viewModel.points, isPositive: viewModel.quote?.isPositive ?? true)
+                        .frame(height: 190)
+                    statsGrid
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                StockNewsCard(item: viewModel.news.first, ticker: viewModel.symbol)
+                    .frame(width: 250)
+            }
+
+            if let message = viewModel.statusMessage {
+                Text(message)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.58))
+                    .lineLimit(2)
+            }
+
+            Spacer(minLength: 0)
+        }
+        .padding(Layout.panelPadding)
+        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+        .task {
+            await viewModel.load(symbol: tickerText)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "chart.line.uptrend.xyaxis")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundStyle(AppColor.white)
+                .frame(width: Layout.appIconSize, height: Layout.appIconSize)
+                .background(AppColor.black.opacity(0.2), in: Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Markets")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text("Live quote, chart, and market context")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.54))
+            }
+
+            Spacer()
+
+            TextField("AAPL", text: $tickerText)
+                .textFieldStyle(.plain)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.white)
+                .tint(.white)
+                .multilineTextAlignment(.center)
+                .textCase(.uppercase)
+                .frame(width: 76, height: 32)
+                .background(AppColor.black.opacity(0.24), in: .rect(cornerRadius: 10, style: .continuous))
+                .onSubmit {
+                    Task { await viewModel.load(symbol: tickerText) }
+                }
+
+            Button {
+                Task { await viewModel.load(symbol: tickerText) }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppColor.white)
+            }
+            .buttonStyle(.plain)
+            .frame(width: Layout.headerButtonSize, height: Layout.headerButtonSize)
+            .background(AppColor.black.opacity(isRefreshHovered ? 0.32 : 0.2), in: Circle())
+            .cursor(.pointingHand)
+            .onHover { isRefreshHovered = $0 }
+            .help("Refresh")
+        }
+    }
+
+    private var priceHeader: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(viewModel.quote?.shortName ?? viewModel.symbol)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.64))
+                .lineLimit(1)
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(viewModel.quote?.priceText ?? "--")
+                    .font(.system(size: 34, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .lineLimit(1)
+
+                Text(viewModel.quote?.changeText ?? "")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(viewModel.quote?.isPositive == false ? Color(red: 1, green: 0.42, blue: 0.42) : Color(red: 0.48, green: 1, blue: 0.62))
+            }
+        }
+    }
+
+    private var rangeSelector: some View {
+        HStack(spacing: 8) {
+            ForEach(StockChartRange.allCases) { range in
+                Button {
+                    Task { await viewModel.setRange(range) }
+                } label: {
+                    Text(range.title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.white.opacity(viewModel.range == range ? 0.98 : 0.58))
+                        .frame(width: 42, height: 26)
+                        .background(AppColor.black.opacity(viewModel.range == range ? 0.34 : 0.16), in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .cursor(.pointingHand)
+            }
+
+            Spacer()
+        }
+    }
+
+    private var statsGrid: some View {
+        LazyVGrid(columns: Layout.contextGridColumns, spacing: 10) {
+            StockStatCell(title: "Open", value: viewModel.quote?.openText ?? "--")
+            StockStatCell(title: "High", value: viewModel.quote?.highText ?? "--")
+            StockStatCell(title: "Low", value: viewModel.quote?.lowText ?? "--")
+            StockStatCell(title: "Volume", value: viewModel.quote?.volumeText ?? "--")
+        }
+    }
+}
+
+private struct StockChartView: View {
+    let points: [Double]
+    let isPositive: Bool
+
+    var body: some View {
+        Canvas { context, size in
+            guard points.count > 1, let minValue = points.min(), let maxValue = points.max() else {
+                return
+            }
+
+            let spread = max(maxValue - minValue, 0.001)
+            let stepX = size.width / CGFloat(points.count - 1)
+
+            var path = Path()
+            for (index, point) in points.enumerated() {
+                let x = CGFloat(index) * stepX
+                let y = size.height - CGFloat((point - minValue) / spread) * size.height
+                if index == 0 {
+                    path.move(to: CGPoint(x: x, y: y))
+                } else {
+                    path.addLine(to: CGPoint(x: x, y: y))
+                }
+            }
+
+            var fillPath = path
+            fillPath.addLine(to: CGPoint(x: size.width, y: size.height))
+            fillPath.addLine(to: CGPoint(x: 0, y: size.height))
+            fillPath.closeSubpath()
+
+            let color = isPositive
+                ? Color(red: 0.56, green: 0.76, blue: 1)
+                : Color(red: 1, green: 0.48, blue: 0.56)
+
+            context.fill(fillPath, with: .linearGradient(
+                Gradient(colors: [color.opacity(0.22), color.opacity(0.02)]),
+                startPoint: CGPoint(x: 0, y: 0),
+                endPoint: CGPoint(x: 0, y: size.height)
+            ))
+            context.stroke(path, with: .color(color.opacity(0.95)), lineWidth: 2)
+        }
+        .background(AppColor.black.opacity(0.12), in: .rect(cornerRadius: 18, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 18, style: .continuous)
+                .stroke(AppColor.white.opacity(0.1), lineWidth: 1)
+        }
+    }
+}
+
+private struct StockStatCell: View {
+    let title: String
+    let value: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(title)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.48))
+
+            Text(value)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.86))
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 12, style: .continuous))
+    }
+}
+
+private struct StockNewsCard: View {
+    let item: StockNewsItem?
+    let ticker: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack {
+                Text("Analysis")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.black.opacity(0.54))
+
+                Spacer()
+
+                Image(systemName: "newspaper")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.black.opacity(0.54))
+            }
+
+            Text(item?.title ?? "\(ticker) market context")
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.black.opacity(0.92))
+                .lineLimit(4)
+
+            Text(item?.summary ?? "Friday will show recent market context here when news is available for this ticker.")
+                .font(.caption)
+                .foregroundStyle(.black.opacity(0.62))
+                .lineSpacing(2)
+                .lineLimit(9)
+
+            Spacer(minLength: 0)
+
+            HStack {
+                Circle()
+                    .fill(.black.opacity(0.34))
+                    .frame(width: 5, height: 5)
+
+                Text(item?.source ?? "Market feed")
+                    .font(.caption2.weight(.semibold))
+                    .foregroundStyle(.black.opacity(0.48))
+
+                Spacer()
+            }
+        }
+        .padding(18)
+        .frame(maxHeight: .infinity)
+        .background(.ultraThinMaterial, in: .rect(cornerRadius: 24, style: .continuous))
+        .background(AppColor.white.opacity(0.62), in: .rect(cornerRadius: 24, style: .continuous))
+        .foregroundStyle(AppColor.black)
+        .overlay {
+            RoundedRectangle(cornerRadius: 24, style: .continuous)
+                .stroke(AppColor.white.opacity(0.38), lineWidth: 1)
+        }
+    }
+}
+
+@MainActor
+private final class StockMarketViewModel: ObservableObject {
+    @Published private(set) var symbol = "AAPL"
+    @Published private(set) var range = StockChartRange.oneMonth
+    @Published private(set) var quote: StockQuote?
+    @Published private(set) var points: [Double] = []
+    @Published private(set) var news: [StockNewsItem] = []
+    @Published private(set) var statusMessage: String?
+
+    private let service = StockMarketService()
+
+    func load(symbol rawSymbol: String) async {
+        let cleanedSymbol = rawSymbol
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            .uppercased()
+        guard !cleanedSymbol.isEmpty else { return }
+
+        symbol = cleanedSymbol
+        statusMessage = "Loading \(cleanedSymbol)"
+
+        do {
+            async let chartResponse = service.chart(symbol: cleanedSymbol, range: range)
+            async let newsResponse = service.news(symbol: cleanedSymbol)
+
+            let chart = try await chartResponse
+            quote = chart.quote
+            points = chart.points
+            news = await (try? newsResponse) ?? []
+            statusMessage = "Market data from Yahoo Finance. Delayed where exchanges require it."
+        } catch {
+            quote = nil
+            points = []
+            news = []
+            statusMessage = "Could not load \(cleanedSymbol): \(error.localizedDescription)"
+        }
+    }
+
+    func setRange(_ range: StockChartRange) async {
+        self.range = range
+        await load(symbol: symbol)
+    }
+}
+
+private struct StockQuote: Equatable {
+    let symbol: String
+    let shortName: String
+    let price: Double
+    let previousClose: Double?
+    let open: Double?
+    let high: Double?
+    let low: Double?
+    let volume: Double?
+    let currency: String
+
+    var change: Double? {
+        guard let previousClose else { return nil }
+        return price - previousClose
+    }
+
+    var changePercent: Double? {
+        guard let previousClose, previousClose != 0 else { return nil }
+        return ((price - previousClose) / previousClose) * 100
+    }
+
+    var isPositive: Bool {
+        (change ?? 0) >= 0
+    }
+
+    var priceText: String {
+        price.formatted(.number.precision(.fractionLength(2)))
+    }
+
+    var changeText: String {
+        guard let change, let changePercent else { return "" }
+        let sign = change >= 0 ? "+" : ""
+        return "\(sign)\(change.formatted(.number.precision(.fractionLength(2)))) (\(sign)\(changePercent.formatted(.number.precision(.fractionLength(2))))%)"
+    }
+
+    var openText: String { formatted(open) }
+    var highText: String { formatted(high) }
+    var lowText: String { formatted(low) }
+
+    var volumeText: String {
+        guard let volume else { return "--" }
+        return volume.formatted(.number.notation(.compactName).precision(.fractionLength(1)))
+    }
+
+    private func formatted(_ value: Double?) -> String {
+        guard let value else { return "--" }
+        return value.formatted(.number.precision(.fractionLength(2)))
+    }
+}
+
+private struct StockChartResponse: Equatable {
+    let quote: StockQuote
+    let points: [Double]
+}
+
+private struct StockNewsItem: Identifiable, Equatable {
+    let id = UUID()
+    let title: String
+    let summary: String
+    let source: String
+}
+
+private enum StockChartRange: String, CaseIterable, Identifiable {
+    case oneDay
+    case oneWeek
+    case oneMonth
+    case threeMonths
+    case oneYear
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .oneDay: "1D"
+        case .oneWeek: "1W"
+        case .oneMonth: "1M"
+        case .threeMonths: "3M"
+        case .oneYear: "1Y"
+        }
+    }
+
+    var yahooRange: String {
+        switch self {
+        case .oneDay: "1d"
+        case .oneWeek: "5d"
+        case .oneMonth: "1mo"
+        case .threeMonths: "3mo"
+        case .oneYear: "1y"
+        }
+    }
+
+    var yahooInterval: String {
+        switch self {
+        case .oneDay: "5m"
+        case .oneWeek: "30m"
+        case .oneMonth: "1d"
+        case .threeMonths: "1d"
+        case .oneYear: "1wk"
+        }
+    }
+}
+
+private struct StockMarketService {
+    func chart(symbol: String, range: StockChartRange) async throws -> StockChartResponse {
+        var components = URLComponents(string: "https://query1.finance.yahoo.com/v8/finance/chart/\(symbol)")!
+        components.queryItems = [
+            URLQueryItem(name: "range", value: range.yahooRange),
+            URLQueryItem(name: "interval", value: range.yahooInterval),
+            URLQueryItem(name: "includePrePost", value: "false"),
+        ]
+
+        guard let url = components.url else {
+            throw StockMarketError.invalidURL
+        }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            throw StockMarketError.requestFailed
+        }
+
+        return try Self.parseChart(data: data, fallbackSymbol: symbol)
+    }
+
+    func news(symbol: String) async throws -> [StockNewsItem] {
+        var components = URLComponents(string: "https://feeds.finance.yahoo.com/rss/2.0/headline")!
+        components.queryItems = [
+            URLQueryItem(name: "s", value: symbol),
+            URLQueryItem(name: "region", value: "US"),
+            URLQueryItem(name: "lang", value: "en-US"),
+        ]
+
+        guard let url = components.url else {
+            throw StockMarketError.invalidURL
+        }
+
+        let (data, response) = try await URLSession.shared.data(from: url)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            throw StockMarketError.requestFailed
+        }
+
+        return StockNewsRSSParser.items(from: data)
+    }
+
+    private static func parseChart(data: Data, fallbackSymbol: String) throws -> StockChartResponse {
+        guard
+            let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let chart = object["chart"] as? [String: Any],
+            let result = (chart["result"] as? [[String: Any]])?.first,
+            let meta = result["meta"] as? [String: Any]
+        else {
+            throw StockMarketError.invalidResponse
+        }
+
+        let indicators = result["indicators"] as? [String: Any]
+        let quoteObject = (indicators?["quote"] as? [[String: Any]])?.first
+        let closes = (quoteObject?["close"] as? [Any])?
+            .compactMap { $0 as? Double }
+            ?? []
+
+        let price = meta["regularMarketPrice"] as? Double
+            ?? closes.last
+            ?? 0
+
+        let quote = StockQuote(
+            symbol: meta["symbol"] as? String ?? fallbackSymbol,
+            shortName: meta["shortName"] as? String ?? meta["symbol"] as? String ?? fallbackSymbol,
+            price: price,
+            previousClose: meta["chartPreviousClose"] as? Double ?? meta["previousClose"] as? Double,
+            open: meta["regularMarketOpen"] as? Double,
+            high: meta["regularMarketDayHigh"] as? Double,
+            low: meta["regularMarketDayLow"] as? Double,
+            volume: meta["regularMarketVolume"] as? Double,
+            currency: meta["currency"] as? String ?? "USD"
+        )
+
+        return StockChartResponse(quote: quote, points: closes)
+    }
+}
+
+private final class StockNewsRSSParser: NSObject, XMLParserDelegate {
+    private var items: [StockNewsItem] = []
+    private var currentElement = ""
+    private var currentTitle = ""
+    private var currentDescription = ""
+    private var isInsideItem = false
+
+    static func items(from data: Data) -> [StockNewsItem] {
+        let parserDelegate = StockNewsRSSParser()
+        let parser = XMLParser(data: data)
+        parser.delegate = parserDelegate
+        parser.parse()
+        return parserDelegate.items
+    }
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        currentElement = elementName
+        if elementName == "item" {
+            isInsideItem = true
+            currentTitle = ""
+            currentDescription = ""
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard isInsideItem else { return }
+
+        switch currentElement {
+        case "title":
+            currentTitle += string
+        case "description":
+            currentDescription += string
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        if elementName == "item" {
+            let title = currentTitle.cleanedRSSString
+            let summary = currentDescription.cleanedRSSString
+            if !title.isEmpty {
+                items.append(StockNewsItem(title: title, summary: summary, source: "Yahoo Finance"))
+            }
+            isInsideItem = false
+        }
+        currentElement = ""
+    }
+}
+
+private enum StockMarketError: LocalizedError {
+    case invalidURL
+    case requestFailed
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            "Invalid market data URL"
+        case .requestFailed:
+            "Market data request failed"
+        case .invalidResponse:
+            "Market data response was not readable"
+        }
     }
 }
 
@@ -3577,6 +4782,7 @@ private extension SidebarItem {
     static let search = SidebarItem(systemName: "magnifyingglass", title: "Search")
     static let mail = SidebarItem(systemName: "mail.stack", title: "Mail")
     static let calendar = SidebarItem(systemName: "calendar", title: "Calendar")
+    static let stocks = SidebarItem(systemName: "chart.line.uptrend.xyaxis", title: "Markets")
     static let saved = SidebarItem(systemName: "bookmark", title: "Saved")
     static let settings = SidebarItem(systemName: "gearshape", title: "Settings")
 
@@ -3585,6 +4791,7 @@ private extension SidebarItem {
         .search,
         .mail,
         .calendar,
+        .stocks,
         .saved,
         .settings,
     ]
@@ -3726,7 +4933,7 @@ private enum AppColor {
 }
 
 private enum Layout {
-    static let minimumWindowWidth: CGFloat = 980
+    static let minimumWindowWidth: CGFloat = 1320
     static let minimumWindowHeight: CGFloat = 680
     static let windowPadding: CGFloat = 34
 
@@ -3767,8 +4974,14 @@ private enum Layout {
     static let contentIconSize: CGFloat = 32
     static let contentTextSpacing: CGFloat = 2
 
-    static let contentAreaWidth: CGFloat = 800
+    static let contentAreaWidth: CGFloat = 1110
     static let contentAreaHeight: CGFloat = 560
+
+    static let browserWorkspaceWidth: CGFloat = 1110
+    static let browserIslandSpacing: CGFloat = 14
+    static let browserChatWidth: CGFloat = 336
+    static let browserPanelPadding: CGFloat = 14
+    static let browserChatPadding: CGFloat = 18
 
     static let searchPanelWidth: CGFloat = 760
     static let searchPanelSpacing: CGFloat = 40
