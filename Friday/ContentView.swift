@@ -92,6 +92,9 @@ private struct MainGlassPanel: View {
     @Namespace private var panelAnimation
     @State private var isCreateHovered = false
     @State private var isConversationPresented = false
+    @State private var homeMainIslandSize = CGSize(width: Layout.panelWidth, height: Layout.panelHeight)
+    @State private var homeMapIslandSize = CGSize(width: Layout.locationMapIslandWidth, height: Layout.locationMapIslandHeight)
+    @State private var homeMailIslandSize = CGSize(width: Layout.locationMapIslandWidth, height: Layout.locationMapIslandHeight)
 
     init(assistantStore: FridayAssistantStore) {
         self.assistantStore = assistantStore
@@ -109,7 +112,7 @@ private struct MainGlassPanel: View {
                 )
                 .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
             } else {
-                HStack(spacing: Layout.browserIslandSpacing) {
+                HStack(alignment: .top, spacing: Layout.browserIslandSpacing) {
                     ZStack {
                         if isConversationPresented {
                             FridayConversationPanel(
@@ -124,14 +127,32 @@ private struct MainGlassPanel: View {
                         }
                     }
                     .padding(Layout.panelPadding)
-                    .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+                    .frame(width: homeMainIslandSize.width, height: homeMainIslandSize.height)
                     .glassSurface(cornerRadius: Layout.panelCornerRadius)
+                    .overlay(alignment: .bottomTrailing) {
+                        IslandResizeHandle(
+                            size: $homeMainIslandSize,
+                            minimumSize: Layout.mainIslandMinimumSize,
+                            maximumSize: Layout.mainIslandMaximumSize
+                        )
+                    }
 
-                    if
-                        !isConversationPresented,
-                        let locationRecommendation = dataProvider.calendarSummary.locationRecommendation
-                    {
-                        HomeLocationMapIsland(recommendation: locationRecommendation)
+                    if !isConversationPresented, dataProvider.hasHomeContextIslands {
+                        HomeContextIslandStack(
+                            locationRecommendation: dataProvider.calendarSummary.locationRecommendation,
+                            mailMessage: dataProvider.unreadMailMessages.first,
+                            remainingMailCount: dataProvider.unreadMailMessages.count,
+                            mapSize: homeMapIslandSize,
+                            mailSize: homeMailIslandSize,
+                            mapSizeBinding: $homeMapIslandSize,
+                            mailSizeBinding: $homeMailIslandSize,
+                            markMailDone: { message in
+                                await dataProvider.markMailDone(message)
+                            },
+                            sendMailReply: { message, body in
+                                try await dataProvider.sendMailReply(to: message, body: body)
+                            }
+                        )
                             .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.985)))
                     }
                 }
@@ -171,7 +192,6 @@ private struct MainGlassPanel: View {
                         isGenerating: false
                     )
 
-                    HomeMailPreviewCard(summary: dataProvider.mailSummary)
                     ContentRow(item: .init(systemName: "checklist", title: "Tasks", subtitle: "5 open items"))
                 }
             }
@@ -794,8 +814,17 @@ private struct ChatMessageRow: View {
     }
 }
 
-private struct FridayMarkdownView: View {
+struct FridayMarkdownView: View {
     let markdown: String
+    var primaryColor = AppColor.white
+    var secondaryColor = AppColor.white.opacity(0.92)
+    var tertiaryColor = AppColor.white.opacity(0.66)
+    var ruleColor = AppColor.white.opacity(0.16)
+    var tableBackgroundColor = AppColor.black.opacity(0.18)
+    var tableHeaderBackgroundColor = AppColor.black.opacity(0.3)
+    var tableBorderColor = AppColor.white.opacity(0.1)
+    var codeBackgroundColor = AppColor.black.opacity(0.32)
+    var codeBorderColor = AppColor.white.opacity(0.12)
 
     private var blocks: [FridayMarkdownBlock] {
         FridayMarkdownParser.blocks(from: markdown)
@@ -816,23 +845,42 @@ private struct FridayMarkdownView: View {
         case .heading(let level, let text):
             Text(FridayMarkdownParser.inlineAttributedString(from: text))
                 .font(headingFont(for: level))
-                .foregroundStyle(.white)
+                .foregroundStyle(primaryColor)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, level <= 2 ? 2 : 0)
         case .paragraph(let text):
             Text(FridayMarkdownParser.inlineAttributedString(from: text))
                 .font(.callout)
-                .foregroundStyle(.white.opacity(0.92))
+                .foregroundStyle(secondaryColor)
                 .fixedSize(horizontal: false, vertical: true)
         case .list(let items, let isOrdered):
-            FridayMarkdownListView(items: items, isOrdered: isOrdered)
+            FridayMarkdownListView(
+                items: items,
+                isOrdered: isOrdered,
+                secondaryColor: secondaryColor,
+                tertiaryColor: tertiaryColor
+            )
         case .horizontalRule:
             Rectangle()
-                .fill(AppColor.white.opacity(0.16))
+                .fill(ruleColor)
                 .frame(height: 1)
                 .padding(.vertical, 4)
         case .table(let table):
-            FridayMarkdownTableView(table: table)
+            FridayMarkdownTableView(
+                table: table,
+                primaryColor: primaryColor,
+                secondaryColor: secondaryColor,
+                tableBackgroundColor: tableBackgroundColor,
+                tableHeaderBackgroundColor: tableHeaderBackgroundColor,
+                tableBorderColor: tableBorderColor
+            )
+        case .codeBlock(let language, let code):
+            FridayMarkdownCodeBlockView(
+                language: language,
+                code: code,
+                backgroundColor: codeBackgroundColor,
+                borderColor: codeBorderColor
+            )
         }
     }
 
@@ -857,6 +905,8 @@ private struct FridayMarkdownView: View {
 private struct FridayMarkdownListView: View {
     let items: [String]
     let isOrdered: Bool
+    let secondaryColor: Color
+    let tertiaryColor: Color
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -864,12 +914,12 @@ private struct FridayMarkdownListView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(isOrdered ? "\(index + 1)." : "•")
                         .font(.callout.weight(.semibold))
-                        .foregroundStyle(.white.opacity(0.66))
+                        .foregroundStyle(tertiaryColor)
                         .frame(width: isOrdered ? 22 : 12, alignment: .trailing)
 
                     Text(FridayMarkdownParser.inlineAttributedString(from: item))
                         .font(.callout)
-                        .foregroundStyle(.white.opacity(0.92))
+                        .foregroundStyle(secondaryColor)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -879,6 +929,11 @@ private struct FridayMarkdownListView: View {
 
 private struct FridayMarkdownTableView: View {
     let table: FridayMarkdownTable
+    let primaryColor: Color
+    let secondaryColor: Color
+    let tableBackgroundColor: Color
+    let tableHeaderBackgroundColor: Color
+    let tableBorderColor: Color
 
     var body: some View {
         ScrollView(.horizontal) {
@@ -900,7 +955,7 @@ private struct FridayMarkdownTableView: View {
             .clipShape(.rect(cornerRadius: 10, style: .continuous))
             .overlay {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .stroke(AppColor.white.opacity(0.14), lineWidth: 1)
+                    .stroke(tableBorderColor, lineWidth: 1)
             }
         }
         .scrollIndicators(.hidden)
@@ -909,23 +964,63 @@ private struct FridayMarkdownTableView: View {
     private func tableCell(_ markdown: String, isHeader: Bool) -> some View {
         Text(FridayMarkdownParser.inlineAttributedString(from: markdown))
             .font(isHeader ? .caption.weight(.semibold) : .caption)
-            .foregroundStyle(.white.opacity(isHeader ? 0.94 : 0.84))
+            .foregroundStyle(isHeader ? primaryColor : secondaryColor)
             .lineLimit(nil)
             .fixedSize(horizontal: false, vertical: true)
             .frame(minWidth: 92, maxWidth: 180, alignment: .leading)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
-            .background(AppColor.black.opacity(isHeader ? 0.3 : 0.18))
+            .background(isHeader ? tableHeaderBackgroundColor : tableBackgroundColor)
             .overlay(alignment: .trailing) {
                 Rectangle()
-                    .fill(AppColor.white.opacity(0.1))
+                    .fill(tableBorderColor)
                     .frame(width: 1)
             }
             .overlay(alignment: .bottom) {
                 Rectangle()
-                    .fill(AppColor.white.opacity(0.1))
+                    .fill(tableBorderColor)
                     .frame(height: 1)
             }
+    }
+}
+
+private struct FridayMarkdownCodeBlockView: View {
+    let language: String?
+    let code: String
+    let backgroundColor: Color
+    let borderColor: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let language, !language.isEmpty {
+                HStack {
+                    Text(language.uppercased())
+                        .font(.caption2.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.56))
+
+                    Spacer()
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .background(AppColor.black.opacity(0.2))
+            }
+
+            ScrollView(.horizontal) {
+                Text(FridayCodeHighlighter.highlighted(code, language: language))
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: true, vertical: false)
+                    .padding(12)
+            }
+            .scrollIndicators(.hidden)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(backgroundColor, in: .rect(cornerRadius: 12, style: .continuous))
+        .clipShape(.rect(cornerRadius: 12, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
+                .stroke(borderColor, lineWidth: 1)
+        }
     }
 }
 
@@ -2476,6 +2571,7 @@ private nonisolated enum FridayMarkdownBlock: Equatable {
     case list(items: [String], isOrdered: Bool)
     case horizontalRule
     case table(FridayMarkdownTable)
+    case codeBlock(language: String?, code: String)
 }
 
 private nonisolated struct FridayMarkdownTable: Equatable {
@@ -2511,6 +2607,13 @@ private nonisolated enum FridayMarkdownParser {
         while index < lines.count {
             let line = lines[index]
             let trimmedLine = line.trimmingCharacters(in: CharacterSet.whitespaces)
+
+            if let codeBlock = codeBlock(from: lines, startingAt: index) {
+                flushParagraph()
+                blocks.append(.codeBlock(language: codeBlock.language, code: codeBlock.code))
+                index = codeBlock.nextIndex
+                continue
+            }
 
             if trimmedLine.isEmpty {
                 flushParagraph()
@@ -2603,6 +2706,34 @@ private nonisolated enum FridayMarkdownParser {
     private static func isHorizontalRule(_ line: String) -> Bool {
         let compact = line.replacingOccurrences(of: " ", with: "")
         return compact.count >= 3 && Set(compact).isSubset(of: Set<Character>(["-", "*", "_"]))
+    }
+
+    private static func codeBlock(from lines: [String], startingAt startIndex: Int) -> (language: String?, code: String, nextIndex: Int)? {
+        let openingLine = lines[startIndex].trimmingCharacters(in: CharacterSet.whitespaces)
+        guard openingLine.hasPrefix("```") || openingLine.hasPrefix("~~~") else {
+            return nil
+        }
+
+        let fence = String(openingLine.prefix(3))
+        let language = openingLine
+            .dropFirst(3)
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            .nilIfEmpty
+
+        var codeLines: [String] = []
+        var index = startIndex + 1
+
+        while index < lines.count {
+            let trimmedLine = lines[index].trimmingCharacters(in: CharacterSet.whitespaces)
+            if trimmedLine.hasPrefix(fence) {
+                return (language, codeLines.joined(separator: "\n"), index + 1)
+            }
+
+            codeLines.append(lines[index])
+            index += 1
+        }
+
+        return (language, codeLines.joined(separator: "\n"), index)
     }
 
     private static func table(from lines: [String], startingAt startIndex: Int) -> (value: FridayMarkdownTable, nextIndex: Int)? {
@@ -2699,6 +2830,156 @@ private nonisolated enum FridayMarkdownParser {
         }
 
         return ranges
+    }
+}
+
+private enum FridayCodeHighlighter {
+    private static let baseColor = Color.white.opacity(0.86)
+    private static let keywordColor = Color(red: 0.56, green: 0.76, blue: 1)
+    private static let stringColor = Color(red: 0.72, green: 0.94, blue: 0.66)
+    private static let numberColor = Color(red: 1, green: 0.74, blue: 0.46)
+    private static let commentColor = Color.white.opacity(0.45)
+    private static let typeColor = Color(red: 0.96, green: 0.68, blue: 1)
+
+    static func highlighted(_ code: String, language: String?) -> AttributedString {
+        var attributed = AttributedString(code)
+        attributed.foregroundColor = baseColor
+
+        apply(pattern: numberPattern, color: numberColor, to: &attributed, source: code)
+
+        for keyword in keywords(for: language) {
+            apply(pattern: "\\b\(NSRegularExpression.escapedPattern(for: keyword))\\b", color: keywordColor, to: &attributed, source: code)
+        }
+
+        for typeName in typeNames(for: language) {
+            apply(pattern: "\\b\(NSRegularExpression.escapedPattern(for: typeName))\\b", color: typeColor, to: &attributed, source: code)
+        }
+
+        for pattern in stringPatterns(for: language) {
+            apply(pattern: pattern, color: stringColor, to: &attributed, source: code)
+        }
+
+        for pattern in commentPatterns(for: language) {
+            apply(pattern: pattern, color: commentColor, to: &attributed, source: code)
+        }
+
+        return attributed
+    }
+
+    private static var numberPattern: String {
+        #"(?<![\w.])(?:0x[0-9a-fA-F]+|\d+(?:\.\d+)?)(?![\w.])"#
+    }
+
+    private static func keywords(for language: String?) -> [String] {
+        switch normalized(language) {
+        case "swift":
+            return [
+                "actor", "any", "as", "async", "await", "break", "case", "catch", "class", "continue",
+                "default", "defer", "do", "else", "enum", "extension", "false", "for", "func", "guard",
+                "if", "import", "in", "init", "let", "nil", "private", "protocol", "public", "return",
+                "self", "static", "struct", "switch", "throw", "throws", "true", "try", "var", "while"
+            ]
+        case "javascript", "js", "typescript", "ts", "tsx", "jsx":
+            return [
+                "async", "await", "break", "case", "catch", "class", "const", "continue", "default",
+                "else", "export", "extends", "false", "finally", "for", "from", "function", "if",
+                "import", "in", "let", "new", "null", "return", "switch", "this", "throw", "true",
+                "try", "type", "undefined", "var", "while"
+            ]
+        case "python", "py":
+            return [
+                "and", "as", "async", "await", "break", "class", "continue", "def", "elif", "else",
+                "except", "False", "finally", "for", "from", "if", "import", "in", "is", "lambda",
+                "None", "not", "or", "pass", "raise", "return", "True", "try", "while", "with", "yield"
+            ]
+        case "json":
+            return ["true", "false", "null"]
+        case "bash", "sh", "shell", "zsh":
+            return ["case", "do", "done", "elif", "else", "esac", "fi", "for", "function", "if", "in", "then", "while"]
+        default:
+            return [
+                "break", "case", "class", "const", "else", "false", "for", "func", "function",
+                "if", "import", "let", "nil", "null", "return", "struct", "true", "var", "while"
+            ]
+        }
+    }
+
+    private static func typeNames(for language: String?) -> [String] {
+        switch normalized(language) {
+        case "swift":
+            return ["Array", "Bool", "Color", "Data", "Dictionary", "Double", "Error", "Int", "Optional", "String", "Task", "URL", "View"]
+        case "typescript", "ts", "tsx":
+            return ["Array", "Promise", "Record", "React", "string", "number", "boolean", "unknown", "void"]
+        case "python", "py":
+            return ["bool", "dict", "float", "int", "list", "set", "str", "tuple"]
+        default:
+            return []
+        }
+    }
+
+    private static func stringPatterns(for language: String?) -> [String] {
+        switch normalized(language) {
+        case "python", "py":
+            return [#""(?:\\.|[^"\\])*""#, #"\'(?:\\.|[^'\\])*\'"#, #"(?s)"""(?:\\.|.*?)""""#, #"(?s)'''(?:\\.|.*?)'''"#]
+        default:
+            return [#""(?:\\.|[^"\\])*""#, #"\'(?:\\.|[^'\\])*\'"#, #"`(?:\\.|[^`\\])*`"#]
+        }
+    }
+
+    private static func commentPatterns(for language: String?) -> [String] {
+        switch normalized(language) {
+        case "python", "py", "bash", "sh", "shell", "zsh":
+            return [#"(?m)#.*$"#]
+        case "json":
+            return []
+        default:
+            return [#"(?m)//.*$"#, #"(?s)/\*.*?\*/"#]
+        }
+    }
+
+    private static func apply(pattern: String, color: Color, to attributed: inout AttributedString, source: String) {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else {
+            return
+        }
+
+        let fullRange = NSRange(source.startIndex..<source.endIndex, in: source)
+        for match in regex.matches(in: source, range: fullRange) {
+            guard
+                let sourceRange = Range(match.range, in: source),
+                let attributedRange = attributedRange(for: sourceRange, in: source, attributed: attributed)
+            else {
+                continue
+            }
+
+            attributed[attributedRange].foregroundColor = color
+        }
+    }
+
+    private static func attributedRange(
+        for sourceRange: Range<String.Index>,
+        in source: String,
+        attributed: AttributedString
+    ) -> Range<AttributedString.Index>? {
+        let lowerOffset = source.distance(from: source.startIndex, to: sourceRange.lowerBound)
+        let upperOffset = source.distance(from: source.startIndex, to: sourceRange.upperBound)
+
+        guard
+            lowerOffset <= attributed.characters.count,
+            upperOffset <= attributed.characters.count,
+            let lowerBound = attributed.characters.index(attributed.startIndex, offsetBy: lowerOffset, limitedBy: attributed.endIndex),
+            let upperBound = attributed.characters.index(attributed.startIndex, offsetBy: upperOffset, limitedBy: attributed.endIndex)
+        else {
+            return nil
+        }
+
+        return lowerBound..<upperBound
+    }
+
+    private static func normalized(_ language: String?) -> String {
+        language?
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            .lowercased()
+            ?? ""
     }
 }
 
@@ -4076,13 +4357,20 @@ private nonisolated extension MKPlacemark {
 private final class HomePanelDataProvider: ObservableObject {
     @Published private(set) var calendarSummary = HomeCalendarSummary.loading
     @Published private(set) var mailSummary = HomeMailSummary.loading
+    @Published private(set) var unreadMailMessages: [HomeMailMessage] = []
 
     private let calendarService: HomeCalendarReading = HomeEventKitCalendarReader()
     private let mailService: HomeMailReading = HomeMailAppleScriptReader()
+    private let homeMailService = HomeUnreadMailAppleScriptReader()
+
+    var hasHomeContextIslands: Bool {
+        calendarSummary.locationRecommendation != nil || !unreadMailMessages.isEmpty
+    }
 
     func refresh() {
         calendarSummary = .loading
         mailSummary = .loading
+        unreadMailMessages = []
 
         Task { [weak self] in
             await self?.refreshCalendar()
@@ -4103,10 +4391,37 @@ private final class HomePanelDataProvider: ObservableObject {
 
     private func refreshMail() async {
         do {
-            mailSummary = try await mailService.inboxSummary()
+            let messages = try await homeMailService.unreadMessages()
+            unreadMailMessages = messages
+            mailSummary = HomeMailSummary(
+                unreadCount: messages.count,
+                latestSubject: messages.first?.subject,
+                statusMessage: nil
+            )
+        } catch {
+            unreadMailMessages = []
+            mailSummary = .unavailable(error.localizedDescription)
+        }
+    }
+
+    func markMailDone(_ message: HomeMailMessage) async {
+        unreadMailMessages.removeAll { $0.id == message.id }
+
+        do {
+            try await homeMailService.markDone(message)
+            mailSummary = HomeMailSummary(
+                unreadCount: unreadMailMessages.count,
+                latestSubject: unreadMailMessages.first?.subject,
+                statusMessage: nil
+            )
         } catch {
             mailSummary = .unavailable(error.localizedDescription)
         }
+    }
+
+    func sendMailReply(to message: HomeMailMessage, body: String) async throws {
+        try await homeMailService.sendReply(to: message, body: body)
+        await markMailDone(message)
     }
 }
 
@@ -4252,6 +4567,30 @@ private struct HomeMailSummary: Equatable {
 
     static func unavailable(_ message: String) -> HomeMailSummary {
         HomeMailSummary(unreadCount: 0, latestSubject: nil, statusMessage: message)
+    }
+}
+
+nonisolated private struct HomeMailMessage: Identifiable, Equatable {
+    let id: String
+    let sender: String
+    let subject: String
+    let body: String
+    let receivedText: String
+
+    var senderName: String {
+        sender.components(separatedBy: " <").first?.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty ?? sender
+    }
+
+    var replyAddress: String {
+        if
+            let start = sender.firstIndex(of: "<"),
+            let end = sender.firstIndex(of: ">"),
+            start < end
+        {
+            return String(sender[sender.index(after: start)..<end])
+        }
+
+        return sender
     }
 }
 
@@ -4533,6 +4872,178 @@ private final class HomeMailAppleScriptReader: HomeMailReading {
         }
 
         return message
+    }
+
+    private nonisolated static var isMailRunning: Bool {
+        NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == mailBundleIdentifier
+        }
+    }
+}
+
+private final class HomeUnreadMailAppleScriptReader {
+    private nonisolated static let mailBundleIdentifier = "com.apple.mail"
+    private nonisolated static let messageDelimiter = "\u{1E}"
+    private nonisolated static let fieldDelimiter = "\u{1F}"
+
+    func unreadMessages() async throws -> [HomeMailMessage] {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.executeUnreadMessagesScript()
+        }.value
+    }
+
+    func markDone(_ message: HomeMailMessage) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.executeMarkDoneScript(messageID: message.id)
+        }.value
+    }
+
+    func sendReply(to message: HomeMailMessage, body: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try Self.executeSendReplyScript(message: message, body: body)
+        }.value
+    }
+
+    private nonisolated static func executeUnreadMessagesScript() throws -> [HomeMailMessage] {
+        guard isMailRunning else {
+            throw HomePanelDataError.mailNotRunning
+        }
+
+        let source = """
+        on fridaySanitize(inputText)
+            set textValue to inputText as text
+            set previousDelimiters to AppleScript's text item delimiters
+            set AppleScript's text item delimiters to "\(fieldDelimiter)"
+            set textItems to text items of textValue
+            set AppleScript's text item delimiters to " "
+            set textValue to textItems as text
+            set AppleScript's text item delimiters to "\(messageDelimiter)"
+            set textItems to text items of textValue
+            set AppleScript's text item delimiters to " "
+            set textValue to textItems as text
+            set AppleScript's text item delimiters to previousDelimiters
+            return textValue
+        end fridaySanitize
+
+        tell application id "\(mailBundleIdentifier)"
+            set unreadMessages to messages of inbox whose read status is false
+            set unreadCount to count of unreadMessages
+            set messageLimit to unreadCount
+
+            if messageLimit is greater than 6 then
+                set messageLimit to 6
+            end if
+
+            set outputText to ""
+
+            repeat with messageIndex from 1 to messageLimit
+                set mailMessage to item messageIndex of unreadMessages
+                set messageID to message id of mailMessage
+                set senderText to my fridaySanitize(sender of mailMessage)
+                set subjectText to my fridaySanitize(subject of mailMessage)
+                set bodyText to my fridaySanitize(content of mailMessage)
+                set receivedText to (date received of mailMessage) as text
+
+                set outputText to outputText & messageID & "\(fieldDelimiter)" & senderText & "\(fieldDelimiter)" & subjectText & "\(fieldDelimiter)" & bodyText & "\(fieldDelimiter)" & receivedText
+
+                if messageIndex is less than messageLimit then
+                    set outputText to outputText & "\(messageDelimiter)"
+                end if
+            end repeat
+
+            return outputText
+        end tell
+        """
+
+        guard let script = NSAppleScript(source: source) else {
+            throw HomePanelDataError.mailScriptUnavailable
+        }
+
+        var errorInfo: NSDictionary?
+        let descriptor = script.executeAndReturnError(&errorInfo)
+
+        if let errorInfo {
+            throw HomePanelDataError.mailAutomationFailed(HomeMailAppleScriptReader.message(from: errorInfo))
+        }
+
+        return parseMessages(output: descriptor.stringValue ?? "")
+    }
+
+    private nonisolated static func executeMarkDoneScript(messageID: String) throws {
+        guard isMailRunning else {
+            throw HomePanelDataError.mailNotRunning
+        }
+
+        let source = """
+        tell application id "\(mailBundleIdentifier)"
+            set matchingMessages to messages of inbox whose message id is \(appleScriptString(messageID))
+            if (count of matchingMessages) is greater than 0 then
+                set read status of item 1 of matchingMessages to true
+            end if
+        end tell
+        """
+
+        try execute(source: source)
+    }
+
+    private nonisolated static func executeSendReplyScript(message: HomeMailMessage, body: String) throws {
+        guard isMailRunning else {
+            throw HomePanelDataError.mailNotRunning
+        }
+
+        let subject = message.subject.localizedCaseInsensitiveContains("re:")
+            ? message.subject
+            : "Re: \(message.subject)"
+
+        let source = """
+        tell application id "\(mailBundleIdentifier)"
+            set outgoingMessage to make new outgoing message with properties {subject:\(appleScriptString(subject)), content:\(appleScriptString(body)), visible:false}
+            tell outgoingMessage
+                make new to recipient at end of to recipients with properties {address:\(appleScriptString(message.replyAddress))}
+                send
+            end tell
+        end tell
+        """
+
+        try execute(source: source)
+    }
+
+    private nonisolated static func execute(source: String) throws {
+        guard let script = NSAppleScript(source: source) else {
+            throw HomePanelDataError.mailScriptUnavailable
+        }
+
+        var errorInfo: NSDictionary?
+        script.executeAndReturnError(&errorInfo)
+
+        if let errorInfo {
+            throw HomePanelDataError.mailAutomationFailed(HomeMailAppleScriptReader.message(from: errorInfo))
+        }
+    }
+
+    private nonisolated static func parseMessages(output: String) -> [HomeMailMessage] {
+        output
+            .components(separatedBy: messageDelimiter)
+            .compactMap { record in
+                let fields = record.components(separatedBy: fieldDelimiter)
+                guard fields.count >= 5 else { return nil }
+
+                return HomeMailMessage(
+                    id: fields[0].nilIfEmpty ?? UUID().uuidString,
+                    sender: fields[1].nilIfEmpty ?? "Unknown sender",
+                    subject: fields[2].nilIfEmpty ?? "(No subject)",
+                    body: fields[3].nilIfEmpty ?? "No body available.",
+                    receivedText: fields[4].nilIfEmpty ?? "Recently"
+                )
+            }
+    }
+
+    private nonisolated static func appleScriptString(_ value: String) -> String {
+        let escaped = value
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+            .replacingOccurrences(of: "\r", with: "\n")
+        return "\"\(escaped)\""
     }
 
     private nonisolated static var isMailRunning: Bool {
@@ -5199,11 +5710,18 @@ private struct StockAIOverviewCard: View {
                 .font(.headline.weight(.semibold))
                 .foregroundStyle(.black.opacity(0.92))
 
-            Text(analysis)
-                .font(.callout)
-                .foregroundStyle(.black.opacity(0.66))
-                .lineSpacing(3)
-                .fixedSize(horizontal: false, vertical: true)
+            FridayMarkdownView(
+                markdown: analysis,
+                primaryColor: AppColor.black.opacity(0.92),
+                secondaryColor: AppColor.black.opacity(0.68),
+                tertiaryColor: AppColor.black.opacity(0.5),
+                ruleColor: AppColor.black.opacity(0.14),
+                tableBackgroundColor: AppColor.white.opacity(0.52),
+                tableHeaderBackgroundColor: AppColor.black.opacity(0.08),
+                tableBorderColor: AppColor.black.opacity(0.1),
+                codeBackgroundColor: AppColor.black.opacity(0.72),
+                codeBorderColor: AppColor.black.opacity(0.14)
+            )
         }
         .padding(18)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -7074,10 +7592,49 @@ private struct PromptField: View {
             RoundedRectangle(cornerRadius: Layout.promptCornerRadius, style: .continuous)
                 .stroke(AppColor.orange.opacity(isHovered ? 0.34 : 0), lineWidth: 1)
         }
+        .overlay {
+            CursorTrackingArea(cursor: .iBeam)
+                .clipShape(.rect(cornerRadius: Layout.promptCornerRadius, style: .continuous))
+                .allowsHitTesting(false)
+        }
         .cursor(.iBeam)
         .onHover { isHovered = $0 }
         .animation(.easeOut(duration: 0.12), value: isHovered)
         .matchedGeometryEffect(id: matchedGeometryID, in: namespace)
+    }
+}
+
+private struct CursorTrackingArea: NSViewRepresentable {
+    let cursor: NSCursor
+
+    func makeNSView(context: Context) -> CursorTrackingView {
+        CursorTrackingView(cursor: cursor)
+    }
+
+    func updateNSView(_ nsView: CursorTrackingView, context: Context) {
+        nsView.cursor = cursor
+    }
+}
+
+private final class CursorTrackingView: NSView {
+    var cursor: NSCursor {
+        didSet {
+            window?.invalidateCursorRects(for: self)
+        }
+    }
+
+    init(cursor: NSCursor) {
+        self.cursor = cursor
+        super.init(frame: .zero)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: cursor)
     }
 }
 
@@ -7153,12 +7710,326 @@ private struct HomeMailPreviewCard: View {
     }
 }
 
+private struct HomeContextIslandStack: View {
+    let locationRecommendation: HomeLocationRecommendation?
+    let mailMessage: HomeMailMessage?
+    let remainingMailCount: Int
+    let mapSize: CGSize
+    let mailSize: CGSize
+    @Binding var mapSizeBinding: CGSize
+    @Binding var mailSizeBinding: CGSize
+    let markMailDone: (HomeMailMessage) async -> Void
+    let sendMailReply: (HomeMailMessage, String) async throws -> Void
+
+    var body: some View {
+        VStack(spacing: Layout.browserIslandSpacing) {
+            if let locationRecommendation {
+                HomeLocationMapIsland(
+                    recommendation: locationRecommendation,
+                    size: mapSize
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    IslandResizeHandle(
+                        size: $mapSizeBinding,
+                        minimumSize: Layout.contextIslandMinimumSize,
+                        maximumSize: Layout.contextIslandMaximumSize
+                    )
+                }
+            }
+
+            if let mailMessage {
+                HomeMailIsland(
+                    message: mailMessage,
+                    remainingCount: remainingMailCount,
+                    size: mailSize,
+                    markDone: markMailDone,
+                    sendReply: sendMailReply
+                )
+                .overlay(alignment: .bottomTrailing) {
+                    IslandResizeHandle(
+                        size: $mailSizeBinding,
+                        minimumSize: Layout.contextIslandMinimumSize,
+                        maximumSize: Layout.contextIslandMaximumSize
+                    )
+                }
+            }
+        }
+    }
+}
+
+private struct IslandResizeHandle: View {
+    @Binding var size: CGSize
+    let minimumSize: CGSize
+    let maximumSize: CGSize
+
+    @State private var dragStartSize: CGSize?
+    @State private var isHovered = false
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(.ultraThinMaterial)
+                .background(AppColor.black.opacity(isHovered ? 0.46 : 0.32), in: Circle())
+                .overlay {
+                    Circle().stroke(AppColor.white.opacity(isHovered ? 0.32 : 0.18), lineWidth: 1)
+                }
+
+            Image(systemName: "arrow.down.right.and.arrow.up.left")
+                .font(.system(size: 10, weight: .bold))
+                .foregroundStyle(.white.opacity(0.84))
+        }
+        .frame(width: 28, height: 28)
+        .offset(x: 8, y: 8)
+        .contentShape(Circle())
+        .cursor(.crosshair)
+        .onHover { isHovered = $0 }
+        .gesture(
+            DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    let startingSize = dragStartSize ?? size
+                    dragStartSize = startingSize
+
+                    size = CGSize(
+                        width: clamp(startingSize.width + value.translation.width, minimumSize.width, maximumSize.width),
+                        height: clamp(startingSize.height + value.translation.height, minimumSize.height, maximumSize.height)
+                    )
+                }
+                .onEnded { _ in
+                    dragStartSize = nil
+                }
+        )
+        .animation(.easeOut(duration: 0.12), value: isHovered)
+    }
+
+    private func clamp(_ value: CGFloat, _ minimum: CGFloat, _ maximum: CGFloat) -> CGFloat {
+        min(max(value, minimum), maximum)
+    }
+}
+
+private struct HomeMailIsland: View {
+    let message: HomeMailMessage
+    let remainingCount: Int
+    let size: CGSize
+    let markDone: (HomeMailMessage) async -> Void
+    let sendReply: (HomeMailMessage, String) async throws -> Void
+
+    @State private var isComposerPresented = false
+    @State private var isMarkingDone = false
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack(spacing: 10) {
+                    Image(systemName: "envelope.fill")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .frame(width: Layout.contentIconSize, height: Layout.contentIconSize)
+                        .background(AppColor.black.opacity(0.2), in: Circle())
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(remainingCount == 1 ? "1 unread email" : "\(remainingCount) unread emails")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.58))
+
+                        Text(message.senderName)
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 26)
+                }
+
+                Text(message.subject)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.86))
+                    .lineLimit(2)
+
+                ScrollView {
+                    Text(message.body)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.72))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .textSelection(.enabled)
+                }
+                .scrollIndicators(.hidden)
+
+                HStack(spacing: 10) {
+                    Button {
+                        isComposerPresented = true
+                    } label: {
+                        Label("Reply", systemImage: "arrowshape.turn.up.left")
+                    }
+                    .buttonStyle(HomeMailIslandButtonStyle())
+
+                    Spacer()
+                }
+            }
+            .padding(18)
+            .frame(width: size.width, height: size.height)
+            .glassSurface(cornerRadius: Layout.panelCornerRadius)
+
+            Button {
+                guard !isMarkingDone else { return }
+                isMarkingDone = true
+                Task {
+                    await markDone(message)
+                    isMarkingDone = false
+                }
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 12, weight: .bold))
+                    .foregroundStyle(.white.opacity(0.92))
+                    .frame(width: 26, height: 26)
+                    .background(.ultraThinMaterial, in: Circle())
+                    .background(AppColor.black.opacity(0.38), in: Circle())
+                    .overlay {
+                        Circle().stroke(AppColor.white.opacity(0.2), lineWidth: 1)
+                    }
+            }
+            .buttonStyle(.plain)
+            .cursor(.pointingHand)
+            .offset(x: 8, y: -8)
+            .disabled(isMarkingDone)
+        }
+        .sheet(isPresented: $isComposerPresented) {
+            HomeMailReplyComposer(
+                message: message,
+                sendReply: sendReply,
+                dismiss: {
+                    isComposerPresented = false
+                }
+            )
+        }
+    }
+}
+
+private struct HomeMailIslandButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.white.opacity(0.86))
+            .labelStyle(.titleAndIcon)
+            .padding(.horizontal, 13)
+            .padding(.vertical, 8)
+            .background(AppColor.black.opacity(configuration.isPressed ? 0.38 : 0.24), in: .rect(cornerRadius: 10, style: .continuous))
+            .overlay {
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(AppColor.white.opacity(0.12), lineWidth: 1)
+            }
+    }
+}
+
+private struct HomeMailReplyComposer: View {
+    let message: HomeMailMessage
+    let sendReply: (HomeMailMessage, String) async throws -> Void
+    let dismiss: () -> Void
+
+    @State private var draft = ""
+    @State private var errorMessage: String?
+    @State private var isSending = false
+    @FocusState private var isDraftFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack(alignment: .top) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Reply to \(message.senderName)")
+                        .font(.title3.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text(message.subject)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.62))
+                        .lineLimit(2)
+                }
+
+                Spacer()
+
+                Button {
+                    dismiss()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 12, weight: .bold))
+                        .frame(width: 28, height: 28)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.white.opacity(0.86))
+                .background(AppColor.black.opacity(0.24), in: Circle())
+                .cursor(.pointingHand)
+            }
+
+            TextEditor(text: $draft)
+                .font(.body)
+                .foregroundStyle(.white)
+                .scrollContentBackground(.hidden)
+                .background(AppColor.black.opacity(0.22), in: .rect(cornerRadius: 14, style: .continuous))
+                .overlay {
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(AppColor.white.opacity(0.12), lineWidth: 1)
+                }
+                .focused($isDraftFocused)
+                .frame(minHeight: 180)
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.red.opacity(0.86))
+            }
+
+            HStack {
+                Spacer()
+
+                Button("Cancel") {
+                    dismiss()
+                }
+                .buttonStyle(HomeMailIslandButtonStyle())
+
+                Button {
+                    send()
+                } label: {
+                    Label(isSending ? "Sending" : "Send Reply", systemImage: "paperplane.fill")
+                }
+                .buttonStyle(HomeMailIslandButtonStyle())
+                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || isSending)
+            }
+        }
+        .padding(22)
+        .frame(width: 520)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+        .onAppear {
+            isDraftFocused = true
+        }
+    }
+
+    private func send() {
+        let replyBody = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !replyBody.isEmpty else { return }
+
+        isSending = true
+        errorMessage = nil
+
+        Task {
+            do {
+                try await sendReply(message, replyBody)
+                dismiss()
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+
+            isSending = false
+        }
+    }
+}
+
 private struct HomeLocationMapIsland: View {
     let recommendation: HomeLocationRecommendation
+    let size: CGSize
     @StateObject private var viewModel: HomeLocationMapViewModel
 
-    init(recommendation: HomeLocationRecommendation) {
+    init(recommendation: HomeLocationRecommendation, size: CGSize) {
         self.recommendation = recommendation
+        self.size = size
         _viewModel = StateObject(wrappedValue: HomeLocationMapViewModel(recommendation: recommendation))
     }
 
@@ -7173,7 +8044,7 @@ private struct HomeLocationMapIsland: View {
                 AppColor.black.opacity(0.22)
             }
         }
-        .frame(width: Layout.locationMapIslandWidth, height: Layout.panelHeight)
+        .frame(width: size.width, height: size.height)
         .clipShape(.rect(cornerRadius: Layout.panelCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Layout.panelCornerRadius, style: .continuous)
@@ -7674,7 +8545,7 @@ private enum Layout {
     static let minimumWindowHeight: CGFloat = 800
     static let windowPadding: CGFloat = 34
 
-    static let sidebarSpacing: CGFloat = 14
+    static let sidebarSpacing: CGFloat = 6
     static let sidebarItemSpacing: CGFloat = 16
     static let sidebarButtonSize: CGFloat = 34
     static let sidebarCornerRadius: CGFloat = 24
@@ -7683,6 +8554,8 @@ private enum Layout {
 
     static let panelWidth: CGFloat = 980
     static let panelHeight: CGFloat = 680
+    static let mainIslandMinimumSize = CGSize(width: 780, height: 520)
+    static let mainIslandMaximumSize = CGSize(width: 1160, height: 760)
     static let homePanelWidth: CGFloat = 560
     static let homePanelHeight: CGFloat = 540
     static let panelSpacing: CGFloat = 18
@@ -7711,7 +8584,10 @@ private enum Layout {
     static let contentIconSize: CGFloat = 32
     static let contentTextSpacing: CGFloat = 2
     static let focusCardHeight: CGFloat = 220
-    static let locationMapIslandWidth: CGFloat = 476
+    static let locationMapIslandWidth: CGFloat = 380
+    static let locationMapIslandHeight: CGFloat = panelHeight * 0.3
+    static let contextIslandMinimumSize = CGSize(width: 280, height: 160)
+    static let contextIslandMaximumSize = CGSize(width: 520, height: 360)
 
     static let contentAreaWidth: CGFloat = 1530
     static let contentAreaHeight: CGFloat = 680

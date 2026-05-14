@@ -15,6 +15,7 @@ import SwiftUI
 
 extension Notification.Name {
     static let fridayFocusPrompt = Notification.Name("FridayFocusPrompt")
+    static let fridayScreenIntelligenceFocusPrompt = Notification.Name("FridayScreenIntelligenceFocusPrompt")
 }
 
 final class FridayWindowController {
@@ -55,16 +56,18 @@ final class FridayWindowController {
     }
 
     func showScreenIntelligenceIsland() {
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
 
         if let screenIntelligencePanel {
-            screenIntelligencePanel.makeKeyAndOrderFront(nil)
             screenIntelligencePanel.centerOnActiveScreen()
-            NSApp.activate(ignoringOtherApps: true)
+            screenIntelligencePanel.orderFrontRegardless()
+            screenIntelligencePanel.makeKey()
+            refocusScreenIntelligencePrompt()
             return
         }
 
-        let panel = NSPanel(
+        let panel = ScreenIntelligencePanel(
             contentRect: NSRect(x: 0, y: 0, width: 720, height: 78),
             styleMask: [.borderless, .fullSizeContentView],
             backing: .buffered,
@@ -73,15 +76,29 @@ final class FridayWindowController {
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
+        panel.hidesOnDeactivate = false
+        panel.isReleasedWhenClosed = false
         panel.level = .floating
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         panel.isMovableByWindowBackground = true
         panel.contentView = NSHostingView(rootView: ScreenIntelligenceIsland())
         panel.centerOnActiveScreen()
-        panel.makeKeyAndOrderFront(nil)
+        panel.orderFrontRegardless()
+        panel.makeKey()
 
         screenIntelligencePanel = panel
-        NSApp.activate(ignoringOtherApps: true)
+        refocusScreenIntelligencePrompt()
+    }
+
+    func hideScreenIntelligenceIsland() {
+        screenIntelligencePanel?.orderOut(nil)
+        screenIntelligencePanel = nil
+    }
+
+    private func refocusScreenIntelligencePrompt() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+            NotificationCenter.default.post(name: .fridayScreenIntelligenceFocusPrompt, object: nil)
+        }
     }
 
     private func installStatusItem() {
@@ -170,6 +187,15 @@ private final class StatusItemTarget: NSObject {
     }
 }
 
+private final class ScreenIntelligencePanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { true }
+
+    override func cancelOperation(_ sender: Any?) {
+        FridayWindowController.shared.hideScreenIntelligenceIsland()
+    }
+}
+
 private extension NSWindow {
     func centerIfNeeded() {
         guard !isVisible else {
@@ -235,10 +261,7 @@ private struct ScreenIntelligenceIsland: View {
             }
 
             if !viewModel.answer.isEmpty {
-                Text(viewModel.answer)
-                    .font(.callout)
-                    .foregroundStyle(.white.opacity(0.88))
-                    .fixedSize(horizontal: false, vertical: true)
+                FridayMarkdownView(markdown: viewModel.answer)
                     .padding(.top, 2)
             }
         }
@@ -254,6 +277,22 @@ private struct ScreenIntelligenceIsland: View {
         .shadow(color: .black.opacity(0.2), radius: 28, x: 0, y: 18)
         .onHover { isHovered = $0 }
         .onAppear {
+            focusPromptSoon()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .fridayScreenIntelligenceFocusPrompt)) { _ in
+            focusPromptSoon()
+        }
+        .onExitCommand {
+            FridayWindowController.shared.hideScreenIntelligenceIsland()
+        }
+    }
+
+    private func focusPromptSoon() {
+        DispatchQueue.main.async {
+            isPromptFocused = true
+        }
+
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
             isPromptFocused = true
         }
     }
