@@ -1,6 +1,8 @@
 DerivedData/
 .build/
 build/
+.env
+.env.*
 *.xcuserstate
 *.xcscmblueprint
 xcuserdata/
