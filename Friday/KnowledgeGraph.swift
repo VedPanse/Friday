@@ -62,10 +62,12 @@ final class KnowledgeGraph: ObservableObject {
 
     static var sample: KnowledgeGraph {
         let graph = KnowledgeGraph()
+        let capTheorem = ConceptNode(label: "CAP theorem")
+        capTheorem.done = true
 
         let scalability = TopicNode(label: "Scalability", children: [
             TopicNode(label: "Distributed Systems", children: [
-                ConceptNode(label: "CAP theorem"),
+                capTheorem,
                 ConceptNode(label: "Consistent hashing"),
                 ConceptNode(label: "Quorum reads"),
                 ConceptNode(label: "Leader election"),
@@ -217,13 +219,19 @@ private struct KnowledgeGraphCanvas: View {
     let edges: [KnowledgeGraphEdge]
     @Binding var selectedNodeID: String?
 
+    private let graphPositionMin: CGFloat = -0.34
+    private let graphPositionMax: CGFloat = 1.34
+    private let graphCoordinateSpace = "KnowledgeGraphCanvasCoordinateSpace"
+
     @State private var nodePositions: [String: UnitPoint] = [:]
     @State private var panOffset = CGSize.zero
     @State private var lastPanOffset = CGSize.zero
     @State private var zoom: CGFloat = 1
     @State private var lastGestureZoom: CGFloat = 1
     @State private var activeDraggedNodeID: String?
-    @State private var dragStartPositions: [String: UnitPoint] = [:]
+    @State private var dragPointerOffsets: [String: CGSize] = [:]
+    @State private var nodeVelocities: [String: CGSize] = [:]
+    @State private var simulationAlpha: CGFloat = 1
 
     var body: some View {
         GeometryReader { geometry in
@@ -259,7 +267,7 @@ private struct KnowledgeGraphCanvas: View {
                         var path = Path()
                         path.move(to: screenPoint(for: parent, in: size))
                         path.addLine(to: screenPoint(for: child, in: size))
-                        context.stroke(path, with: .color(.white.opacity(0.13)), lineWidth: max(0.7, 1 / zoom))
+                        context.stroke(path, with: .color(.white.opacity(0.13)), lineWidth: 0.9)
                     }
                 }
 
@@ -267,24 +275,32 @@ private struct KnowledgeGraphCanvas: View {
                     KnowledgeGraphNodeView(
                         node: node,
                         isSelected: selectedNodeID == node.id,
+                        isDragging: activeDraggedNodeID == node.id,
                         zoom: zoom,
                         select: {
                             selectedNodeID = node.id
                         },
-                        dragChanged: { translation in
+                        dragChanged: { value in
                             activeDraggedNodeID = node.id
-                            move(node, dragTranslation: translation, in: geometry.size)
+                            move(node, dragValue: value, in: geometry.size)
                         },
                         dragEnded: {
-                            dragStartPositions[node.id] = nil
+                            dragPointerOffsets[node.id] = nil
+                            simulationAlpha = max(simulationAlpha, 0.18)
                             activeDraggedNodeID = nil
                         }
                     ) {
                         selectedNodeID = node.id
                     }
                     .position(screenPoint(for: node, in: geometry.size))
+                    .transaction { transaction in
+                        if activeDraggedNodeID == node.id {
+                            transaction.animation = nil
+                        }
+                    }
                 }
             }
+            .coordinateSpace(name: graphCoordinateSpace)
             .contentShape(Rectangle())
             .simultaneousGesture(zoomGesture(in: geometry.size))
             .onAppear {
@@ -292,6 +308,9 @@ private struct KnowledgeGraphCanvas: View {
             }
             .onChange(of: nodes) { _, _ in
                 seedNodePositionsIfNeeded()
+            }
+            .onReceive(Timer.publish(every: 1.0 / 60.0, on: .main, in: .common).autoconnect()) { _ in
+                tickSimulation(in: geometry.size)
             }
             .clipped()
         }
@@ -332,10 +351,14 @@ private struct KnowledgeGraphCanvas: View {
 
     private func seedNodePositionsIfNeeded() {
         var positions = nodePositions
+        var velocities = nodeVelocities
         for node in nodes where positions[node.id] == nil {
-            positions[node.id] = node.position
+            positions[node.id] = jitteredPosition(for: node)
+            velocities[node.id] = .zero
         }
         nodePositions = positions
+        nodeVelocities = velocities
+        simulationAlpha = max(simulationAlpha, 0.9)
     }
 
     private func screenPoint(for node: KnowledgeGraphDisplayNode, in size: CGSize) -> CGPoint {
@@ -364,20 +387,139 @@ private struct KnowledgeGraphCanvas: View {
         zoom >= 0.68
     }
 
-    private func move(_ node: KnowledgeGraphDisplayNode, dragTranslation translation: CGSize, in size: CGSize) {
-        if dragStartPositions[node.id] == nil {
-            dragStartPositions[node.id] = nodePositions[node.id] ?? node.position
+    private func move(_ node: KnowledgeGraphDisplayNode, dragValue: DragGesture.Value, in size: CGSize) {
+        if dragPointerOffsets[node.id] == nil {
+            let nodePoint = screenPoint(for: node, in: size)
+            dragPointerOffsets[node.id] = CGSize(
+                width: nodePoint.x - dragValue.startLocation.x,
+                height: nodePoint.y - dragValue.startLocation.y
+            )
         }
 
-        guard let basePosition = dragStartPositions[node.id] else {
-            return
-        }
-
+        let pointerOffset = dragPointerOffsets[node.id] ?? .zero
+        let nextScreenPoint = CGPoint(
+            x: dragValue.location.x + pointerOffset.width,
+            y: dragValue.location.y + pointerOffset.height
+        )
         let nextPosition = UnitPoint(
-            x: clamp(basePosition.x + translation.width / max(size.width * zoom, 1), min: 0.02, max: 0.98),
-            y: clamp(basePosition.y + translation.height / max(size.height * zoom, 1), min: 0.02, max: 0.98)
+            x: clamp((nextScreenPoint.x - panOffset.width) / max(size.width * zoom, 1), min: graphPositionMin, max: graphPositionMax),
+            y: clamp((nextScreenPoint.y - panOffset.height) / max(size.height * zoom, 1), min: graphPositionMin, max: graphPositionMax)
         )
         nodePositions[node.id] = nextPosition
+        nodeVelocities[node.id] = .zero
+        simulationAlpha = max(simulationAlpha, 0.45)
+    }
+
+    private func tickSimulation(in size: CGSize) {
+        guard size.width > 0, size.height > 0, !nodes.isEmpty else { return }
+        guard simulationAlpha > 0.012 || activeDraggedNodeID != nil else { return }
+
+        var positions = nodePositions
+        var velocities = nodeVelocities
+        var forces = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, CGSize.zero) })
+        let worldPositions = Dictionary(uniqueKeysWithValues: nodes.map { node in
+            let position = positions[node.id] ?? node.position
+            return (node.id, position.point(in: size))
+        })
+
+        for leftIndex in nodes.indices {
+            for rightIndex in nodes.index(after: leftIndex)..<nodes.endIndex {
+                let left = nodes[leftIndex]
+                let right = nodes[rightIndex]
+                guard
+                    let leftPoint = worldPositions[left.id],
+                    let rightPoint = worldPositions[right.id]
+                else {
+                    continue
+                }
+
+                let dx = rightPoint.x - leftPoint.x
+                let dy = rightPoint.y - leftPoint.y
+                let distance = max(hypot(dx, dy), 1)
+                guard distance < 380 else { continue }
+
+                let magnitude = 5200 / (distance * distance)
+                let force = CGSize(width: dx / distance * magnitude, height: dy / distance * magnitude)
+                forces[left.id, default: .zero].width -= force.width
+                forces[left.id, default: .zero].height -= force.height
+                forces[right.id, default: .zero].width += force.width
+                forces[right.id, default: .zero].height += force.height
+            }
+        }
+
+        for edge in edges {
+            guard
+                let parent = nodes.first(where: { $0.id == edge.parentID }),
+                let child = nodes.first(where: { $0.id == edge.childID }),
+                let parentPoint = worldPositions[parent.id],
+                let childPoint = worldPositions[child.id]
+            else {
+                continue
+            }
+
+            let dx = childPoint.x - parentPoint.x
+            let dy = childPoint.y - parentPoint.y
+            let distance = max(hypot(dx, dy), 1)
+            let desiredDistance = parent.kind == .topic && child.kind == .topic ? 220.0 : 170.0
+            let magnitude = (distance - desiredDistance) * 0.014
+            let force = CGSize(width: dx / distance * magnitude, height: dy / distance * magnitude)
+            forces[parent.id, default: .zero].width += force.width
+            forces[parent.id, default: .zero].height += force.height
+            forces[child.id, default: .zero].width -= force.width
+            forces[child.id, default: .zero].height -= force.height
+        }
+
+        let center = CGPoint(x: size.width / 2, y: size.height / 2)
+        for node in nodes {
+            guard let point = worldPositions[node.id] else { continue }
+            forces[node.id, default: .zero].width += (center.x - point.x) * 0.0012
+            forces[node.id, default: .zero].height += (center.y - point.y) * 0.0012
+        }
+
+        let friction: CGFloat = 0.82
+        let maxVelocity: CGFloat = 10
+        for node in nodes {
+            if activeDraggedNodeID == node.id {
+                velocities[node.id] = .zero
+                continue
+            }
+
+            let force = forces[node.id] ?? .zero
+            var velocity = velocities[node.id] ?? .zero
+            velocity.width = (velocity.width + force.width * simulationAlpha) * friction
+            velocity.height = (velocity.height + force.height * simulationAlpha) * friction
+            velocity = clampedVelocity(velocity, maxVelocity: maxVelocity)
+
+            let current = positions[node.id] ?? node.position
+            positions[node.id] = UnitPoint(
+                x: clamp(current.x + velocity.width / size.width, min: graphPositionMin, max: graphPositionMax),
+                y: clamp(current.y + velocity.height / size.height, min: graphPositionMin, max: graphPositionMax)
+            )
+            velocities[node.id] = velocity
+        }
+
+        nodePositions = positions
+        nodeVelocities = velocities
+        simulationAlpha *= activeDraggedNodeID == nil ? 0.986 : 0.996
+    }
+
+    private func clampedVelocity(_ velocity: CGSize, maxVelocity: CGFloat) -> CGSize {
+        let speed = hypot(velocity.width, velocity.height)
+        guard speed > maxVelocity else { return velocity }
+        return CGSize(
+            width: velocity.width / speed * maxVelocity,
+            height: velocity.height / speed * maxVelocity
+        )
+    }
+
+    private func jitteredPosition(for node: KnowledgeGraphDisplayNode) -> UnitPoint {
+        let hash = abs(node.id.hashValue)
+        let xJitter = CGFloat(hash % 41 - 20) / 1000
+        let yJitter = CGFloat((hash / 41) % 41 - 20) / 1000
+        return UnitPoint(
+            x: clamp(node.position.x + xJitter, min: graphPositionMin, max: graphPositionMax),
+            y: clamp(node.position.y + yJitter, min: graphPositionMin, max: graphPositionMax)
+        )
     }
 
     private func clamp(_ value: CGFloat, min minimum: CGFloat, max maximum: CGFloat) -> CGFloat {
@@ -449,79 +591,24 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(alignment: .top, spacing: 12) {
-                Circle()
-                    .fill(nodeColor)
-                    .frame(width: node.kind == .topic ? 13 : 10, height: node.kind == .topic ? 13 : 10)
-                    .shadow(color: nodeColor.opacity(0.42), radius: 6)
-                    .padding(.top, 7)
-
-                VStack(alignment: .leading, spacing: 7) {
-                    Text(node.displayLabel)
-                        .font(.system(size: 16, weight: .regular))
-                        .foregroundStyle(.white)
-                        .lineLimit(2)
-
-                    HStack(spacing: 8) {
-                        Text(typeLabel)
-                        Text("Depth \(node.depth)")
-                    }
-                    .font(.system(size: 10, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.58))
-                }
-
-                Spacer(minLength: 0)
-
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.white.opacity(0.78))
-                        .frame(width: 28, height: 28)
-                        .background(Color.black.opacity(isCloseHovered ? 0.34 : 0.2), in: Circle())
-                }
-                .buttonStyle(.plain)
-                .onHover { isCloseHovered = $0 }
+            if (node.done) {
+                Image(systemName: "checkmark.circle")
+                    .foregroundColor(.green)
             }
+            Text(node.label)
 
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Connections")
-                    .font(.system(size: 11, weight: .regular))
-                    .foregroundStyle(.white.opacity(0.54))
-
-                if relatedNodes.isEmpty {
-                    Text("No connected nodes.")
-                        .font(.system(size: 12, weight: .regular))
-                        .foregroundStyle(.gray.opacity(0.86))
-                } else {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(relatedNodes) { relatedNode in
-                            HStack(spacing: 9) {
-                                Circle()
-                                    .fill(relatedNode.node.kind == .topic ? KnowledgeGraphColor.topic : KnowledgeGraphColor.concept)
-                                    .frame(width: relatedNode.node.kind == .topic ? 8 : 6, height: relatedNode.node.kind == .topic ? 8 : 6)
-
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(relatedNode.node.displayLabel)
-                                        .font(.system(size: 12, weight: .regular))
-                                        .foregroundStyle(relatedNode.node.kind == .topic ? .white : Color.gray.opacity(0.9))
-                                        .lineLimit(1)
-
-                                    Text(relatedNode.role)
-                                        .font(.system(size: 9, weight: .regular))
-                                        .foregroundStyle(.white.opacity(0.42))
-                                }
-
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 9)
-                            .background(Color.black.opacity(0.18), in: .rect(cornerRadius: 10, style: .continuous))
+            if node.kind == .topic {
+                ForEach(relatedNodes) { relatedNode in
+                    HStack {
+                        if (relatedNode.node.done) {
+                            Image(systemName: "checkmark.circle")
+                                .foregroundColor(.green)
                         }
+                        Text(relatedNode.node.label)
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
-
-            Spacer(minLength: 0)
         }
         .padding(18)
         .frame(width: 260, height: 680)
@@ -532,9 +619,10 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
 private struct KnowledgeGraphNodeView: View {
     let node: KnowledgeGraphDisplayNode
     let isSelected: Bool
+    let isDragging: Bool
     let zoom: CGFloat
     let select: () -> Void
-    let dragChanged: (CGSize) -> Void
+    let dragChanged: (DragGesture.Value) -> Void
     let dragEnded: () -> Void
     let action: () -> Void
 
@@ -549,14 +637,14 @@ private struct KnowledgeGraphNodeView: View {
     private var nodeDiameter: CGFloat {
         switch node.kind {
         case .topic:
-            return node.depth == 0 ? 17 : 14
+            return node.depth == 0 ? 13 : 11
         case .concept:
-            return 10
+            return 7
         }
     }
 
     private var visualScale: CGFloat {
-        min(max(zoom, 0.62), 1.7)
+        min(max(zoom, 0.52), 1.45)
     }
 
     private var shouldShowLabel: Bool {
@@ -564,7 +652,7 @@ private struct KnowledgeGraphNodeView: View {
     }
 
     private var labelFontSize: CGFloat {
-        node.kind == .topic ? 10 : 8
+        node.kind == .topic ? 8 : 7
     }
 
     private var labelColor: Color {
@@ -572,66 +660,74 @@ private struct KnowledgeGraphNodeView: View {
     }
 
     private var labelOffset: CGFloat {
-        nodeDiameter / 2 + 22
+        nodeDiameter / 2 + 16
     }
 
     var body: some View {
-        Button(action: select) {
-            ZStack {
-                ZStack {
-                    Circle()
-                        .fill(nodeColor.opacity(isSelected || isHovered ? 0.3 : (isBreathing ? 0.18 : 0.11)))
-                        .frame(width: nodeDiameter + (isBreathing ? 22 : 16), height: nodeDiameter + (isBreathing ? 22 : 16))
-                        .blur(radius: isBreathing ? 7 : 5)
-
-                    Circle()
-                        .fill(nodeColor)
-                        .frame(width: nodeDiameter, height: nodeDiameter)
-                        .shadow(color: nodeColor.opacity(isBreathing ? 0.56 : 0.38), radius: isHovered ? 10 : (isBreathing ? 7 : 4))
-                        .scaleEffect(isBreathing ? 1.04 : 0.98)
-                }
-
-                if shouldShowLabel {
-                    Text(node.displayLabel)
-                        .font(.system(size: labelFontSize, weight: .regular))
-                        .foregroundStyle(labelColor)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.center)
-                        .frame(width: node.kind == .topic ? 74 : 62)
-                        .offset(y: labelOffset)
-                        .transition(.opacity)
-                }
-            }
-            .frame(width: node.kind == .topic ? 92 : 78, height: shouldShowLabel ? 104 : 44)
+        nodeBody
+            .frame(width: node.kind == .topic ? 72 : 60, height: shouldShowLabel ? 78 : 34)
             .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovering in
-            isHovered = isHovering
-            updateCursor(isHovering: isHovering)
-        }
-        .onDisappear {
-            restoreCursorIfNeeded()
-        }
-        .onAppear {
-            withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) {
-                isBreathing = true
+            .onTapGesture(perform: select)
+            .highPriorityGesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .named("KnowledgeGraphCanvasCoordinateSpace"))
+                    .onChanged { value in
+                        dragChanged(value)
+                    }
+                    .onEnded { _ in
+                        dragEnded()
+                    }
+            )
+            .onHover { isHovering in
+                isHovered = isHovering
+                updateCursor(isHovering: isHovering)
+            }
+            .onDisappear {
+                restoreCursorIfNeeded()
+            }
+            .onAppear {
+                withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) {
+                    isBreathing = true
+                }
+            }
+            .scaleEffect(visualScale * (!isDragging && (isHovered || isSelected) ? 1.04 : 1))
+            .animation(isDragging ? nil : .easeInOut(duration: 2.4).repeatForever(autoreverses: true), value: isBreathing)
+            .animation(isDragging ? nil : .easeOut(duration: 0.14), value: isHovered)
+            .animation(isDragging ? nil : .easeOut(duration: 0.14), value: isSelected)
+            .animation(isDragging ? nil : .easeOut(duration: 0.12), value: shouldShowLabel)
+    }
+
+    private var nodeBody: some View {
+        ZStack {
+            ZStack {
+                Circle()
+                    .fill(nodeColor.opacity(isSelected || isHovered ? 0.3 : (isBreathing && !isDragging ? 0.18 : 0.11)))
+                    .frame(
+                        width: nodeDiameter + (isBreathing && !isDragging ? 16 : 12),
+                        height: nodeDiameter + (isBreathing && !isDragging ? 16 : 12)
+                    )
+                    .blur(radius: isBreathing && !isDragging ? 5 : 4)
+
+                Circle()
+                    .fill(nodeColor)
+                    .frame(width: nodeDiameter, height: nodeDiameter)
+                    .shadow(
+                        color: nodeColor.opacity(isBreathing && !isDragging ? 0.56 : 0.38),
+                        radius: isHovered && !isDragging ? 7 : (isBreathing && !isDragging ? 5 : 3)
+                    )
+                    .scaleEffect(isBreathing && !isDragging ? 1.04 : 0.98)
+            }
+
+            if shouldShowLabel {
+                Text(node.displayLabel)
+                    .font(.system(size: labelFontSize, weight: .regular))
+                    .foregroundStyle(labelColor)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.center)
+                    .frame(width: node.kind == .topic ? 58 : 48)
+                    .offset(y: labelOffset)
+                    .transition(.opacity)
             }
         }
-        .highPriorityGesture(
-            DragGesture(minimumDistance: 1)
-                .onChanged { value in
-                    dragChanged(value.translation)
-                }
-                .onEnded { _ in
-                    dragEnded()
-                }
-        )
-        .scaleEffect(visualScale * (isHovered || isSelected ? 1.04 : 1))
-        .animation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true), value: isBreathing)
-        .animation(.easeOut(duration: 0.14), value: isHovered)
-        .animation(.easeOut(duration: 0.14), value: isSelected)
-        .animation(.easeOut(duration: 0.12), value: shouldShowLabel)
     }
 
     private func updateCursor(isHovering: Bool) {
@@ -889,11 +985,13 @@ struct ConceptNodeView: View {
             node: KnowledgeGraphDisplayNode(
                 id: concept.id,
                 label: concept.label,
+                done: concept.done,
                 kind: .concept,
                 depth: 0,
                 position: UnitPoint(x: 0.5, y: 0.5)
             ),
             isSelected: false,
+            isDragging: false,
             zoom: 1,
             select: { },
             dragChanged: { _ in },
@@ -975,6 +1073,7 @@ private struct KnowledgeGraphLayout {
         nodes.append(KnowledgeGraphDisplayNode(
             id: node.id,
             label: node.label,
+            done: node.done,
             kind: kind,
             depth: depth,
             position: position
@@ -1017,6 +1116,7 @@ private struct KnowledgeGraphDisplayNode: Identifiable, Equatable {
 
     let id: String
     let label: String
+    let done: Bool
     let kind: Kind
     let depth: Int
     let position: UnitPoint
@@ -1047,6 +1147,7 @@ private enum KnowledgeGraphTree {
             let current = KnowledgeGraphDisplayNode(
                 id: node.id,
                 label: node.label,
+                done: node.done,
                 kind: kind,
                 depth: 0,
                 position: UnitPoint(x: 0.5, y: 0.5)
