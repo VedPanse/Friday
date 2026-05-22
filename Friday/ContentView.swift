@@ -46,6 +46,9 @@ struct ContentView: View {
                 case .stocks:
                     StockMarketPanel()
                         .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
+                case .knowledgeGraph:
+                    KnowledgeGraphPanel()
+                        .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
                 case .saved:
                     StubPanel(
                         systemName: "bookmark",
@@ -8391,6 +8394,7 @@ private extension SidebarItem {
     static let mail = SidebarItem(systemName: "mail.stack", title: "Mail")
     static let calendar = SidebarItem(systemName: "calendar", title: "Calendar")
     static let stocks = SidebarItem(systemName: "chart.line.uptrend.xyaxis", title: "Markets")
+    static let knowledgeGraph = SidebarItem(systemName: "point.3.connected.trianglepath.dotted", title: "Knowledge")
     static let saved = SidebarItem(systemName: "bookmark", title: "Saved")
     static let settings = SidebarItem(systemName: "gearshape", title: "Settings")
 
@@ -8400,6 +8404,7 @@ private extension SidebarItem {
         .mail,
         .calendar,
         .stocks,
+        .knowledgeGraph,
         .saved,
         .settings,
     ]
