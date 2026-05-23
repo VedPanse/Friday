@@ -143,7 +143,7 @@ final class KnowledgeGraph: ObservableObject {
             displayOptions: displayOptions,
             topics: topics.map(Self.codableNode(from:))
         )
-        store.save(snapshot)
+        store.saveInBackground(snapshot)
     }
 
     private func findNode(withID nodeID: String) -> (any Node)? {
@@ -354,6 +354,8 @@ struct KnowledgeGraphCodableNode: Codable, Equatable {
 }
 
 private struct KnowledgeGraphStore {
+    private static let saveQueue = DispatchQueue(label: "com.vedpanse.Friday.knowledge-graph-save", qos: .utility)
+
     private let fileURL: URL
 
     init(fileManager: FileManager = .default) {
@@ -376,7 +378,14 @@ private struct KnowledgeGraphStore {
         return snapshot
     }
 
-    func save(_ snapshot: KnowledgeGraphSnapshot) {
+    func saveInBackground(_ snapshot: KnowledgeGraphSnapshot) {
+        let fileURL = fileURL
+        Self.saveQueue.async {
+            Self.save(snapshot, to: fileURL)
+        }
+    }
+
+    private static func save(_ snapshot: KnowledgeGraphSnapshot, to fileURL: URL) {
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
@@ -971,10 +980,11 @@ private struct KnowledgeGraphCanvas: View {
                 )
 
                 Canvas { context, size in
+                    let nodeLookup = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, $0) })
                     for edge in edges {
                         guard
-                            let parent = nodes.first(where: { $0.id == edge.parentID }),
-                            let child = nodes.first(where: { $0.id == edge.childID })
+                            let parent = nodeLookup[edge.parentID],
+                            let child = nodeLookup[edge.childID]
                         else {
                             continue
                         }
@@ -1135,46 +1145,29 @@ private struct KnowledgeGraphCanvas: View {
         var positions = nodePositions
         var velocities = nodeVelocities
         var forces = Dictionary(uniqueKeysWithValues: nodes.map { ($0.id, CGSize.zero) })
-        let worldPositions = Dictionary(uniqueKeysWithValues: nodes.map { node in
+        let nodeIndexByID = Dictionary(uniqueKeysWithValues: nodes.enumerated().map { ($0.element.id, $0.offset) })
+        let worldPoints = nodes.map { node in
             let position = positions[node.id] ?? node.position
-            return (node.id, position.point(in: size))
-        })
+            return position.point(in: size)
+        }
+        let repulsionForces = Self.repulsionForces(for: worldPoints)
 
-        for leftIndex in nodes.indices {
-            for rightIndex in nodes.index(after: leftIndex)..<nodes.endIndex {
-                let left = nodes[leftIndex]
-                let right = nodes[rightIndex]
-                guard
-                    let leftPoint = worldPositions[left.id],
-                    let rightPoint = worldPositions[right.id]
-                else {
-                    continue
-                }
-
-                let dx = rightPoint.x - leftPoint.x
-                let dy = rightPoint.y - leftPoint.y
-                let distance = max(hypot(dx, dy), 1)
-                guard distance < 380 else { continue }
-
-                let magnitude = 5200 / (distance * distance)
-                let force = CGSize(width: dx / distance * magnitude, height: dy / distance * magnitude)
-                forces[left.id, default: .zero].width -= force.width
-                forces[left.id, default: .zero].height -= force.height
-                forces[right.id, default: .zero].width += force.width
-                forces[right.id, default: .zero].height += force.height
-            }
+        for (index, node) in nodes.enumerated() {
+            forces[node.id] = repulsionForces[index]
         }
 
         for edge in edges {
             guard
-                let parent = nodes.first(where: { $0.id == edge.parentID }),
-                let child = nodes.first(where: { $0.id == edge.childID }),
-                let parentPoint = worldPositions[parent.id],
-                let childPoint = worldPositions[child.id]
+                let parentIndex = nodeIndexByID[edge.parentID],
+                let childIndex = nodeIndexByID[edge.childID]
             else {
                 continue
             }
 
+            let parent = nodes[parentIndex]
+            let child = nodes[childIndex]
+            let parentPoint = worldPoints[parentIndex]
+            let childPoint = worldPoints[childIndex]
             let dx = childPoint.x - parentPoint.x
             let dy = childPoint.y - parentPoint.y
             let distance = max(hypot(dx, dy), 1)
@@ -1188,8 +1181,8 @@ private struct KnowledgeGraphCanvas: View {
         }
 
         let center = CGPoint(x: size.width / 2, y: size.height / 2)
-        for node in nodes {
-            guard let point = worldPositions[node.id] else { continue }
+        for (index, node) in nodes.enumerated() {
+            let point = worldPoints[index]
             forces[node.id, default: .zero].width += (center.x - point.x) * 0.0012
             forces[node.id, default: .zero].height += (center.y - point.y) * 0.0012
         }
@@ -1219,6 +1212,70 @@ private struct KnowledgeGraphCanvas: View {
         nodePositions = positions
         nodeVelocities = velocities
         simulationAlpha *= activeDraggedNodeID == nil ? 0.986 : 0.996
+    }
+
+    private static func repulsionForces(for worldPoints: [CGPoint]) -> [CGSize] {
+        let nodeCount = worldPoints.count
+        guard nodeCount > 1 else {
+            return Array(repeating: .zero, count: nodeCount)
+        }
+
+        let minimumParallelNodeCount = 36
+        guard nodeCount >= minimumParallelNodeCount else {
+            return repulsionForces(for: worldPoints, in: 0..<nodeCount)
+        }
+
+        let processorCount = max(2, ProcessInfo.processInfo.activeProcessorCount - 1)
+        let chunkCount = min(processorCount, nodeCount)
+        let chunkSize = Int(ceil(Double(nodeCount) / Double(chunkCount)))
+        let lock = NSLock()
+        var partialForces: [[CGSize]] = []
+        partialForces.reserveCapacity(chunkCount)
+
+        DispatchQueue.concurrentPerform(iterations: chunkCount) { chunkIndex in
+            let lowerBound = chunkIndex * chunkSize
+            let upperBound = min(lowerBound + chunkSize, nodeCount)
+            guard lowerBound < upperBound else { return }
+
+            let forces = repulsionForces(for: worldPoints, in: lowerBound..<upperBound)
+            lock.lock()
+            partialForces.append(forces)
+            lock.unlock()
+        }
+
+        return partialForces.reduce(into: Array(repeating: .zero, count: nodeCount)) { accumulatedForces, forces in
+            for index in forces.indices {
+                accumulatedForces[index].width += forces[index].width
+                accumulatedForces[index].height += forces[index].height
+            }
+        }
+    }
+
+    private static func repulsionForces(
+        for worldPoints: [CGPoint],
+        in leftRange: Range<Int>
+    ) -> [CGSize] {
+        var forces = Array(repeating: CGSize.zero, count: worldPoints.count)
+
+        for leftIndex in leftRange {
+            for rightIndex in worldPoints.index(after: leftIndex)..<worldPoints.endIndex {
+                let leftPoint = worldPoints[leftIndex]
+                let rightPoint = worldPoints[rightIndex]
+                let dx = rightPoint.x - leftPoint.x
+                let dy = rightPoint.y - leftPoint.y
+                let distance = max(hypot(dx, dy), 1)
+                guard distance < 380 else { continue }
+
+                let magnitude = 5200 / (distance * distance)
+                let force = CGSize(width: dx / distance * magnitude, height: dy / distance * magnitude)
+                forces[leftIndex].width -= force.width
+                forces[leftIndex].height -= force.height
+                forces[rightIndex].width += force.width
+                forces[rightIndex].height += force.height
+            }
+        }
+
+        return forces
     }
 
     private func clampedVelocity(_ velocity: CGSize, maxVelocity: CGFloat) -> CGSize {
@@ -1396,23 +1453,26 @@ private struct KnowledgeGraphRelatedNodeRow: View {
     @State private var isCursorPushed = false
 
     var body: some View {
-        HStack(spacing: 8) {
-            if relatedNode.node.done {
-                Image(systemName: "checkmark.circle")
-                    .foregroundColor(.green)
+        Button(action: select) {
+            HStack(spacing: 8) {
+                if relatedNode.node.done {
+                    Image(systemName: "checkmark.circle")
+                        .foregroundColor(.green)
+                }
+
+                Text(relatedNode.node.label)
+                    .foregroundStyle(isHovered ? .white : .secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+
+                Spacer(minLength: 0)
             }
-
-            Text(relatedNode.node.label)
-                .foregroundStyle(isHovered ? .white : .secondary)
-                .lineLimit(2)
-                .multilineTextAlignment(.leading)
-                .textSelection(.enabled)
-
-            Spacer(minLength: 0)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
         }
-        .textSelection(.enabled)
+        .buttonStyle(.plain)
+        .textSelection(.disabled)
         .contentShape(Rectangle())
-        .onTapGesture(perform: select)
         .onHover { isHovering in
             isHovered = isHovering
             updateCursor(isHovering: isHovering)
@@ -2107,7 +2167,7 @@ private enum KnowledgeGraphColor {
     }
 }
 
-private extension JSONDecoder {
+private nonisolated extension JSONDecoder {
     static var knowledgeGraph: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -2115,7 +2175,7 @@ private extension JSONDecoder {
     }
 }
 
-private extension JSONEncoder {
+private nonisolated extension JSONEncoder {
     static var knowledgeGraph: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601

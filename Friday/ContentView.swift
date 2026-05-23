@@ -43,8 +43,8 @@ struct ContentView: View {
                 case .calendar:
                     CalendarPanel()
                     .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
-                case .stocks:
-                    StockMarketPanel()
+                case .reminders:
+                    RemindersPanel()
                         .transition(AnyTransition.opacity.combined(with: .scale(scale: 0.98)))
                 case .knowledgeGraph:
                     KnowledgeGraphPanel()
@@ -165,7 +165,7 @@ private struct MainGlassPanel: View {
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: dataProvider.calendarSummary.locationRecommendation)
         .animation(.spring(response: 0.34, dampingFraction: 0.86), value: viewModel.browserSession?.id)
         .task {
-            dataProvider.refresh()
+            dataProvider.refresh(settings: assistantStore.settings)
             viewModel.start()
         }
         .onReceive(NotificationCenter.default.publisher(for: fridayFocusPromptNotification)) { _ in
@@ -189,13 +189,12 @@ private struct MainGlassPanel: View {
             ScrollView {
                 VStack(spacing: Layout.rowSpacing) {
                     FocusCard(
-                        title: "Focus",
-                        subtitle: focusSubtitle,
+                        plan: dataProvider.focusPlan,
                         image: nil,
                         isGenerating: false
                     )
 
-                    ContentRow(item: .init(systemName: "checklist", title: "Tasks", subtitle: "5 open items"))
+                    ContentRow(item: remindersItem)
                 }
             }
             .scrollIndicators(.hidden)
@@ -237,7 +236,7 @@ private struct MainGlassPanel: View {
     }
 
     private func addItem() {
-        dataProvider.refresh()
+        dataProvider.refresh(settings: assistantStore.settings)
     }
 
     private func beginConversation() {
@@ -258,33 +257,19 @@ private struct MainGlassPanel: View {
         }
     }
 
-    private var focusSubtitle: String {
-        let summary = dataProvider.calendarSummary
-
-        if let statusMessage = summary.statusMessage {
-            return statusMessage
-        } else if let nextEventTitle = summary.nextEventTitle {
-            return "Next: \(nextEventTitle)"
-        } else if summary.eventCount > 0 {
-            return "\(summary.eventCount) events today"
-        } else {
-            return "No more events today"
-        }
-    }
-
-    private var mailItem: PanelItem {
-        let summary = dataProvider.mailSummary
+    private var remindersItem: PanelItem {
+        let summary = dataProvider.remindersSummary
         let subtitle: String
 
         if let statusMessage = summary.statusMessage {
             subtitle = statusMessage
-        } else if let latestSubject = summary.latestSubject, summary.unreadCount > 0 {
-            subtitle = "\(summary.unreadCount) unread, latest: \(latestSubject)"
+        } else if let nextReminder = summary.nextReminder {
+            subtitle = "\(summary.openCount) open, next: \(nextReminder.title)"
         } else {
-            subtitle = "No unread messages"
+            subtitle = "No open reminders"
         }
 
-        return .init(systemName: "envelope", title: "Inbox", subtitle: subtitle)
+        return .init(systemName: "checklist", title: "Reminders", subtitle: subtitle)
     }
 }
 
@@ -2988,6 +2973,8 @@ private enum FridayCodeHighlighter {
 
 @MainActor
 private final class FridayAssistantStore: ObservableObject {
+    private nonisolated static let saveQueue = DispatchQueue(label: "com.vedpanse.Friday.assistant-state-save", qos: .utility)
+
     @Published var settings: FridayAssistantSettings {
         didSet {
             FridayKeychain.openAIAPIKey = settings.apiKey
@@ -3083,16 +3070,23 @@ private final class FridayAssistantStore: ObservableObject {
     }
 
     private func save() {
+        let fileURL = fileURL
+        let state = FridayAssistantState(
+            settings: settings,
+            memories: memories,
+            contextItems: contextItems
+        )
+
+        Self.saveQueue.async {
+            Self.save(state, to: fileURL)
+        }
+    }
+
+    private nonisolated static func save(_ state: FridayAssistantState, to fileURL: URL) {
         do {
             try FileManager.default.createDirectory(
                 at: fileURL.deletingLastPathComponent(),
                 withIntermediateDirectories: true
-            )
-
-            let state = FridayAssistantState(
-                settings: settings,
-                memories: memories,
-                contextItems: contextItems
             )
             let data = try JSONEncoder.fridayAssistant.encode(state)
             try data.write(to: fileURL, options: [.atomic])
@@ -3696,9 +3690,25 @@ private enum FridayContextPicker {
 
 private nonisolated enum FridayContextReader {
     static func items(for urls: [URL]) async -> [FridayContextItem] {
-        await Task.detached(priority: .userInitiated) {
-            urls.compactMap(item(for:))
-        }.value
+        await withTaskGroup(of: (Int, FridayContextItem?).self) { group in
+            for (index, url) in urls.enumerated() {
+                group.addTask(priority: .userInitiated) {
+                    (index, item(for: url))
+                }
+            }
+
+            var indexedItems: [(Int, FridayContextItem)] = []
+            indexedItems.reserveCapacity(urls.count)
+            for await (index, item) in group {
+                if let item {
+                    indexedItems.append((index, item))
+                }
+            }
+
+            return indexedItems
+                .sorted { $0.0 < $1.0 }
+                .map(\.1)
+        }
     }
 
     private static func item(for url: URL) -> FridayContextItem? {
@@ -4255,7 +4265,7 @@ private nonisolated enum FridayOpenAIError: LocalizedError {
     }
 }
 
-private extension JSONDecoder {
+private nonisolated extension JSONDecoder {
     static var fridayAssistant: JSONDecoder {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
@@ -4263,7 +4273,7 @@ private extension JSONDecoder {
     }
 }
 
-private extension JSONEncoder {
+private nonisolated extension JSONEncoder {
     static var fridayAssistant: JSONEncoder {
         let encoder = JSONEncoder()
         encoder.dateEncodingStrategy = .iso8601
@@ -4360,50 +4370,70 @@ private nonisolated extension MKPlacemark {
 private final class HomePanelDataProvider: ObservableObject {
     @Published private(set) var calendarSummary = HomeCalendarSummary.loading
     @Published private(set) var mailSummary = HomeMailSummary.loading
+    @Published private(set) var remindersSummary = HomeRemindersSummary.loading
+    @Published private(set) var focusPlan = HomeFocusPlan.loading
     @Published private(set) var unreadMailMessages: [HomeMailMessage] = []
 
     private let calendarService: HomeCalendarReading = HomeEventKitCalendarReader()
-    private let mailService: HomeMailReading = HomeMailAppleScriptReader()
+    private let remindersService: HomeRemindersReading = HomeEventKitRemindersReader()
     private let homeMailService = HomeUnreadMailAppleScriptReader()
+    private let focusPlanner = HomeFocusPlanner()
 
     var hasHomeContextIslands: Bool {
         calendarSummary.locationRecommendation != nil || !unreadMailMessages.isEmpty
     }
 
-    func refresh() {
+    func refresh(settings: FridayAssistantSettings) {
         calendarSummary = .loading
         mailSummary = .loading
+        remindersSummary = .loading
+        focusPlan = .loading
         unreadMailMessages = []
 
         Task { [weak self] in
-            await self?.refreshCalendar()
-        }
-
-        Task { [weak self] in
-            await self?.refreshMail()
+            await self?.refreshAll(settings: settings)
         }
     }
 
-    private func refreshCalendar() async {
-        do {
-            calendarSummary = try await calendarService.todaySummary()
-        } catch {
-            calendarSummary = .unavailable(error.localizedDescription)
-        }
+    private func refreshAll(settings: FridayAssistantSettings) async {
+        async let loadedCalendar = readCalendar()
+        async let loadedMailMessages = readMailMessages()
+        async let loadedReminders = readReminders()
+
+        let calendar = await loadedCalendar
+        let mailMessages = await loadedMailMessages
+        let reminders = await loadedReminders
+        let mail = HomeMailSummary(
+            unreadCount: mailMessages.count,
+            latestSubject: mailMessages.first?.subject,
+            statusMessage: nil
+        )
+
+        calendarSummary = calendar
+        unreadMailMessages = mailMessages
+        mailSummary = mail
+        remindersSummary = reminders
+        focusPlan = await focusPlanner.plan(
+            calendar: calendar,
+            mail: mail,
+            reminders: reminders,
+            settings: settings
+        )
     }
 
-    private func refreshMail() async {
+    private func readCalendar() async -> HomeCalendarSummary {
+        (try? await calendarService.todaySummary()) ?? .unavailable("Calendar is unavailable")
+    }
+
+    private func readMailMessages() async -> [HomeMailMessage] {
+        (try? await homeMailService.unreadMessages()) ?? []
+    }
+
+    private func readReminders() async -> HomeRemindersSummary {
         do {
-            let messages = try await homeMailService.unreadMessages()
-            unreadMailMessages = messages
-            mailSummary = HomeMailSummary(
-                unreadCount: messages.count,
-                latestSubject: messages.first?.subject,
-                statusMessage: nil
-            )
+            return try await remindersService.summary()
         } catch {
-            unreadMailMessages = []
-            mailSummary = .unavailable(error.localizedDescription)
+            return .unavailable(error.localizedDescription)
         }
     }
 
@@ -4520,22 +4550,366 @@ private struct FocusImageGenerator {
     }
 }
 
+nonisolated private struct HomeFocusPlan: Equatable {
+    enum Source: String, Equatable {
+        case loading = "Planning"
+        case local = "Local"
+        case foundation = "Apple Intelligence"
+        case openAI = "OpenAI"
+    }
+
+    let title: String
+    let reason: String
+    let actionTitle: String
+    let durationMinutes: Int
+    let startsAt: Date?
+    let source: Source
+
+    static let loading = HomeFocusPlan(
+        title: "Choosing your focus",
+        reason: "Friday is checking calendar, reminders, and inbox pressure.",
+        actionTitle: "Start now",
+        durationMinutes: 20,
+        startsAt: nil,
+        source: .loading
+    )
+}
+
+nonisolated private struct HomeReminderItem: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let dueDate: Date?
+    let priority: Int
+    let notes: String?
+
+    var isHighPriority: Bool {
+        priority > 0 && priority <= 4
+    }
+
+    var isOverdue: Bool {
+        guard let dueDate else { return false }
+        return dueDate < Date()
+    }
+
+    var dueText: String {
+        guard let dueDate else { return "No due date" }
+        if Calendar.current.isDateInToday(dueDate) {
+            return "Today \(dueDate.formatted(date: .omitted, time: .shortened))"
+        }
+        if dueDate < Date() {
+            return "Overdue"
+        }
+        return dueDate.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
+nonisolated private struct ReminderDraft: Equatable {
+    var title: String
+    var notes: String
+    var dueDate: Date?
+    var priority: Int
+
+    static let empty = ReminderDraft(title: "", notes: "", dueDate: nil, priority: 0)
+
+    init(title: String, notes: String = "", dueDate: Date? = nil, priority: Int = 0) {
+        self.title = title
+        self.notes = notes
+        self.dueDate = dueDate
+        self.priority = priority
+    }
+
+    init(reminder: HomeReminderItem) {
+        self.init(
+            title: reminder.title,
+            notes: reminder.notes ?? "",
+            dueDate: reminder.dueDate,
+            priority: reminder.priority
+        )
+    }
+}
+
+nonisolated private struct HomeRemindersSummary: Equatable {
+    let openCount: Int
+    let reminders: [HomeReminderItem]
+    let statusMessage: String?
+
+    static let loading = HomeRemindersSummary(openCount: 0, reminders: [], statusMessage: "Checking reminders")
+
+    static func unavailable(_ message: String) -> HomeRemindersSummary {
+        HomeRemindersSummary(openCount: 0, reminders: [], statusMessage: message)
+    }
+
+    var nextReminder: HomeReminderItem? {
+        reminders.sortedForFocus.first
+    }
+
+    var dueSoon: [HomeReminderItem] {
+        reminders.sortedForFocus.filter { reminder in
+            guard let dueDate = reminder.dueDate else { return false }
+            return dueDate <= Date().addingTimeInterval(24 * 60 * 60)
+        }
+    }
+}
+
 private struct HomeCalendarSummary: Equatable {
     let eventCount: Int
     let nextEventTitle: String?
+    let nextEventStartDate: Date?
+    let activeEventTitle: String?
+    let activeEventEndDate: Date?
     let locationRecommendation: HomeLocationRecommendation?
     let statusMessage: String?
 
     static let loading = HomeCalendarSummary(
         eventCount: 0,
         nextEventTitle: nil,
+        nextEventStartDate: nil,
+        activeEventTitle: nil,
+        activeEventEndDate: nil,
         locationRecommendation: nil,
         statusMessage: "Checking calendar access"
     )
 
     static func unavailable(_ message: String) -> HomeCalendarSummary {
-        HomeCalendarSummary(eventCount: 0, nextEventTitle: nil, locationRecommendation: nil, statusMessage: message)
+        HomeCalendarSummary(
+            eventCount: 0,
+            nextEventTitle: nil,
+            nextEventStartDate: nil,
+            activeEventTitle: nil,
+            activeEventEndDate: nil,
+            locationRecommendation: nil,
+            statusMessage: message
+        )
     }
+}
+
+private struct HomeFocusPlanner {
+    func plan(
+        calendar: HomeCalendarSummary,
+        mail: HomeMailSummary,
+        reminders: HomeRemindersSummary,
+        settings: FridayAssistantSettings
+    ) async -> HomeFocusPlan {
+        let fallback = localPlan(calendar: calendar, mail: mail, reminders: reminders)
+
+        if shouldUseOpenAI(calendar: calendar, mail: mail, reminders: reminders),
+           let plan = await openAIPlan(calendar: calendar, mail: mail, reminders: reminders, settings: settings) {
+            return plan
+        }
+
+        #if canImport(FoundationModels)
+        if #available(macOS 26.0, *), case .available = SystemLanguageModel.default.availability,
+           let plan = await foundationPlan(calendar: calendar, mail: mail, reminders: reminders) {
+            return plan
+        }
+        #endif
+
+        return fallback
+    }
+
+    private func localPlan(
+        calendar: HomeCalendarSummary,
+        mail: HomeMailSummary,
+        reminders: HomeRemindersSummary
+    ) -> HomeFocusPlan {
+        let now = Date()
+
+        if let activeTitle = calendar.activeEventTitle, let endDate = calendar.activeEventEndDate {
+            return HomeFocusPlan(
+                title: activeTitle,
+                reason: "This calendar block is happening now and ends at \(endDate.formatted(date: .omitted, time: .shortened)).",
+                actionTitle: "Stay focused",
+                durationMinutes: max(5, min(120, Int(endDate.timeIntervalSince(now) / 60))),
+                startsAt: nil,
+                source: .local
+            )
+        }
+
+        if
+            let nextTitle = calendar.nextEventTitle,
+            let startDate = calendar.nextEventStartDate,
+            startDate.timeIntervalSince(now) <= 75 * 60
+        {
+            let minutesUntilStart = max(1, Int(startDate.timeIntervalSince(now) / 60))
+            return HomeFocusPlan(
+                title: nextTitle,
+                reason: "It starts at \(startDate.formatted(date: .omitted, time: .shortened)), in about \(minutesUntilStart) minutes.",
+                actionTitle: "Start now",
+                durationMinutes: min(45, max(10, minutesUntilStart)),
+                startsAt: startDate,
+                source: .local
+            )
+        }
+
+        if let reminder = reminders.reminders.sortedForFocus.first(where: { $0.isOverdue || $0.isHighPriority }) ?? reminders.dueSoon.first {
+            return HomeFocusPlan(
+                title: reminder.title,
+                reason: reminder.isOverdue ? "This reminder is overdue." : "This is the most urgent open reminder.",
+                actionTitle: "Start now",
+                durationMinutes: reminder.isHighPriority ? 45 : 25,
+                startsAt: reminder.dueDate,
+                source: .local
+            )
+        }
+
+        if mail.unreadCount >= 3 {
+            return HomeFocusPlan(
+                title: "Triage inbox",
+                reason: "You have \(mail.unreadCount) unread messages competing for attention.",
+                actionTitle: "Start now",
+                durationMinutes: 15,
+                startsAt: nil,
+                source: .local
+            )
+        }
+
+        return HomeFocusPlan(
+            title: "Deep work block",
+            reason: "No urgent calendar event or reminder is visible right now.",
+            actionTitle: "Start now",
+            durationMinutes: 45,
+            startsAt: nil,
+            source: .local
+        )
+    }
+
+    private func shouldUseOpenAI(
+        calendar: HomeCalendarSummary,
+        mail: HomeMailSummary,
+        reminders: HomeRemindersSummary
+    ) -> Bool {
+        mail.unreadCount >= 8
+            || reminders.dueSoon.count >= 4
+            || (calendar.eventCount >= 4 && reminders.openCount >= 3)
+    }
+
+    private func openAIPlan(
+        calendar: HomeCalendarSummary,
+        mail: HomeMailSummary,
+        reminders: HomeRemindersSummary,
+        settings: FridayAssistantSettings
+    ) async -> HomeFocusPlan? {
+        let apiKey = settings.apiKey.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+        guard !apiKey.isEmpty else { return nil }
+
+        do {
+            var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+            request.httpMethod = "POST"
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(calendar: calendar, mail: mail, reminders: reminders))
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+                return nil
+            }
+
+            return Self.decodePlan(from: data, source: .openAI)
+        } catch {
+            return nil
+        }
+    }
+
+    #if canImport(FoundationModels)
+    @available(macOS 26.0, *)
+    private func foundationPlan(
+        calendar: HomeCalendarSummary,
+        mail: HomeMailSummary,
+        reminders: HomeRemindersSummary
+    ) async -> HomeFocusPlan? {
+        do {
+            let session = LanguageModelSession(instructions: """
+            You choose exactly one thing the user should focus on right now. Return only compact JSON with keys: title, reason, actionTitle, durationMinutes.
+            Keep title under 6 words, reason under 18 words, actionTitle under 3 words, durationMinutes between 5 and 120.
+            """)
+            let response = try await session.respond(to: contextText(calendar: calendar, mail: mail, reminders: reminders))
+            return Self.decodePlan(fromText: response.content, source: .foundation)
+        } catch {
+            return nil
+        }
+    }
+    #endif
+
+    private func requestBody(
+        calendar: HomeCalendarSummary,
+        mail: HomeMailSummary,
+        reminders: HomeRemindersSummary
+    ) -> [String: Any] {
+        [
+            "model": "gpt-5.4-mini",
+            "max_output_tokens": 600,
+            "instructions": """
+            You choose exactly one thing the user should focus on right now from calendar, reminders, and inbox context. Return only valid JSON:
+            {"title":"...", "reason":"...", "actionTitle":"Start now", "durationMinutes":25}
+            Prefer active/soon calendar events, overdue or high-priority reminders, then inbox triage. Keep title under 6 words and reason under 18 words.
+            """,
+            "input": contextText(calendar: calendar, mail: mail, reminders: reminders),
+        ]
+    }
+
+    private func contextText(
+        calendar: HomeCalendarSummary,
+        mail: HomeMailSummary,
+        reminders: HomeRemindersSummary
+    ) -> String {
+        """
+        Now: \(Date().formatted(date: .abbreviated, time: .shortened))
+        Active event: \(calendar.activeEventTitle ?? "none")
+        Next event: \(calendar.nextEventTitle ?? "none") \(calendar.nextEventStartDate?.formatted(date: .omitted, time: .shortened) ?? "")
+        Unread mail: \(mail.unreadCount), latest: \(mail.latestSubject ?? "none")
+        Reminders:
+        \(reminders.reminders.prefix(8).map { "- \($0.title), due: \($0.dueText), priority: \($0.priority)" }.joined(separator: "\n"))
+        """
+    }
+
+    private static func decodePlan(from data: Data, source: HomeFocusPlan.Source) -> HomeFocusPlan? {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+
+        if let outputText = object["output_text"] as? String {
+            return decodePlan(fromText: outputText, source: source)
+        }
+
+        guard let output = object["output"] as? [[String: Any]] else {
+            return nil
+        }
+
+        let text = output
+            .compactMap { item -> String? in
+                guard let content = item["content"] as? [[String: Any]] else { return nil }
+                return content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            }
+            .joined(separator: "\n")
+
+        return text.isEmpty ? nil : decodePlan(fromText: text, source: source)
+    }
+
+    private static func decodePlan(fromText text: String, source: HomeFocusPlan.Source) -> HomeFocusPlan? {
+        let cleanedText = text
+            .trimmingCharacters(in: CharacterSet.whitespacesAndNewlines)
+            .replacingOccurrences(of: "^```(?:json)?\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\s*```$", with: "", options: .regularExpression)
+
+        guard let data = cleanedText.data(using: .utf8) else { return nil }
+        guard let decoded = try? JSONDecoder().decode(HomeFocusPlanPayload.self, from: data) else { return nil }
+
+        return HomeFocusPlan(
+            title: decoded.title.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).nilIfEmpty ?? "Focus now",
+            reason: decoded.reason.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).nilIfEmpty ?? "This is the best next use of your attention.",
+            actionTitle: decoded.actionTitle.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines).nilIfEmpty ?? "Start now",
+            durationMinutes: min(max(decoded.durationMinutes, 5), 120),
+            startsAt: nil,
+            source: source
+        )
+    }
+}
+
+private struct HomeFocusPlanPayload: Decodable {
+    let title: String
+    let reason: String
+    let actionTitle: String
+    let durationMinutes: Int
 }
 
 nonisolated private struct HomeLocationRecommendation: Equatable {
@@ -4605,7 +4979,15 @@ private protocol HomeMailReading {
     func inboxSummary() async throws -> HomeMailSummary
 }
 
-private final class HomeCalendarEventClassifier {
+private protocol HomeRemindersReading {
+    func summary() async throws -> HomeRemindersSummary
+    func create(_ draft: ReminderDraft) async throws
+    func update(id: String, draft: ReminderDraft) async throws
+    func complete(id: String) async throws
+    func delete(id: String) async throws
+}
+
+private nonisolated final class HomeCalendarEventClassifier {
     func locationRecommendation(from events: [EKEvent]) async -> HomeLocationRecommendation? {
         let eventsWithLocation = events.filter(\.hasUsableLocation)
         guard !eventsWithLocation.isEmpty else { return nil }
@@ -4741,58 +5123,65 @@ nonisolated private struct GeocodedCalendarLocation {
     let coordinate: CLLocationCoordinate2D?
 }
 
-private final class HomeEventKitCalendarReader: HomeCalendarReading {
-    private let eventStore = EKEventStore()
-    private let eventClassifier = HomeCalendarEventClassifier()
-
+private final class HomeEventKitCalendarReader: HomeCalendarReading, @unchecked Sendable {
     func todaySummary() async throws -> HomeCalendarSummary {
-        try await requestCalendarAccessIfNeeded()
-        eventStore.refreshSourcesIfNecessary()
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            let eventClassifier = HomeCalendarEventClassifier()
+            try await Self.requestCalendarAccessIfNeeded(using: eventStore)
+            eventStore.refreshSourcesIfNecessary()
 
-        let calendar = Calendar.current
-        let startOfDay = calendar.startOfDay(for: Date())
-        guard
-            let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay),
-            let locationSearchEnd = calendar.date(byAdding: .day, value: 7, to: startOfDay)
-        else {
-            throw HomePanelDataError.invalidDateRange
-        }
+            let calendar = Calendar.current
+            let now = Date()
+            let startOfDay = calendar.startOfDay(for: now)
+            guard
+                let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay),
+                let locationSearchEnd = calendar.date(byAdding: .day, value: 7, to: startOfDay)
+            else {
+                throw HomePanelDataError.invalidDateRange
+            }
 
-        let allCalendars = eventStore.fridayAllEventCalendars()
-        let todayPredicate = eventStore.predicateForEvents(
-            withStart: Date(),
-            end: endOfDay,
-            calendars: allCalendars.isEmpty ? nil : allCalendars
-        )
-        let locationPredicate = eventStore.predicateForEvents(
-            withStart: Date(),
-            end: locationSearchEnd,
-            calendars: allCalendars.isEmpty ? nil : allCalendars
-        )
+            let allCalendars = eventStore.fridayAllEventCalendars()
+            let todayPredicate = eventStore.predicateForEvents(
+                withStart: now,
+                end: endOfDay,
+                calendars: allCalendars.isEmpty ? nil : allCalendars
+            )
+            let locationPredicate = eventStore.predicateForEvents(
+                withStart: now,
+                end: locationSearchEnd,
+                calendars: allCalendars.isEmpty ? nil : allCalendars
+            )
 
-        let events = eventStore.events(matching: todayPredicate)
-            .filter { !$0.isAllDay }
-            .sorted { $0.startDate < $1.startDate }
-        let locationEvents = eventStore.events(matching: locationPredicate)
-            .filter { !$0.isAllDay }
-            .sorted { $0.startDate < $1.startDate }
+            let events = eventStore.events(matching: todayPredicate)
+                .filter { !$0.isAllDay }
+                .sorted { $0.startDate < $1.startDate }
+            let locationEvents = eventStore.events(matching: locationPredicate)
+                .filter { !$0.isAllDay }
+                .sorted { $0.startDate < $1.startDate }
+            let activeEvent = events.first { $0.startDate <= now && $0.endDate > now }
+            let nextEvent = events.first { $0.startDate > now }
 
-        let locationRecommendation = await eventClassifier.locationRecommendation(from: locationEvents)
+            let locationRecommendation = await eventClassifier.locationRecommendation(from: locationEvents)
 
-        return HomeCalendarSummary(
-            eventCount: events.count,
-            nextEventTitle: events.first?.title,
-            locationRecommendation: locationRecommendation,
-            statusMessage: nil
-        )
+            return HomeCalendarSummary(
+                eventCount: events.count,
+                nextEventTitle: nextEvent?.title,
+                nextEventStartDate: nextEvent?.startDate,
+                activeEventTitle: activeEvent?.title,
+                activeEventEndDate: activeEvent?.endDate,
+                locationRecommendation: locationRecommendation,
+                statusMessage: nil
+            )
+        }.value
     }
 
-    private func requestCalendarAccessIfNeeded() async throws {
+    private static func requestCalendarAccessIfNeeded(using eventStore: EKEventStore) async throws {
         switch EKEventStore.authorizationStatus(for: .event) {
         case .fullAccess:
             return
         case .notDetermined:
-            let isGranted = try await requestFullCalendarAccess()
+            let isGranted = try await requestFullCalendarAccess(using: eventStore)
             guard isGranted else { throw HomePanelDataError.calendarAccessDenied }
         case .denied, .restricted, .writeOnly:
             throw HomePanelDataError.calendarAccessDenied
@@ -4801,7 +5190,7 @@ private final class HomeEventKitCalendarReader: HomeCalendarReading {
         }
     }
 
-    private func requestFullCalendarAccess() async throws -> Bool {
+    private static func requestFullCalendarAccess(using eventStore: EKEventStore) async throws -> Bool {
         try await withCheckedThrowingContinuation { continuation in
             eventStore.requestFullAccessToEvents { isGranted, error in
                 if let error {
@@ -4810,6 +5199,129 @@ private final class HomeEventKitCalendarReader: HomeCalendarReading {
                     continuation.resume(returning: isGranted)
                 }
             }
+        }
+    }
+}
+
+private final class HomeEventKitRemindersReader: HomeRemindersReading, @unchecked Sendable {
+    func summary() async throws -> HomeRemindersSummary {
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            try await Self.requestReminderAccessIfNeeded(using: eventStore)
+
+            let calendar = Calendar.current
+            let now = Date()
+            let startOfToday = calendar.startOfDay(for: now)
+            guard let endOfRange = calendar.date(byAdding: .day, value: 14, to: startOfToday) else {
+                throw HomePanelDataError.invalidDateRange
+            }
+
+            let calendars = eventStore.calendars(for: .reminder)
+            let predicate = eventStore.predicateForIncompleteReminders(
+                withDueDateStarting: nil,
+                ending: endOfRange,
+                calendars: calendars.isEmpty ? nil : calendars
+            )
+            let reminders = try await Self.fetchReminders(matching: predicate, using: eventStore)
+                .map(HomeReminderItem.init(reminder:))
+                .sortedForFocus
+
+            return HomeRemindersSummary(
+                openCount: reminders.count,
+                reminders: Array(reminders.prefix(30)),
+                statusMessage: reminders.isEmpty ? "No open reminders due soon" : nil
+            )
+        }.value
+    }
+
+    func create(_ draft: ReminderDraft) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            try await Self.requestReminderAccessIfNeeded(using: eventStore)
+            let reminder = EKReminder(eventStore: eventStore)
+            reminder.calendar = eventStore.defaultCalendarForNewReminders()
+                ?? eventStore.calendars(for: .reminder).first
+            Self.apply(draft, to: reminder)
+            try eventStore.save(reminder, commit: true)
+        }.value
+    }
+
+    func update(id: String, draft: ReminderDraft) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            try await Self.requestReminderAccessIfNeeded(using: eventStore)
+            guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
+                throw HomePanelDataError.reminderNotFound
+            }
+            Self.apply(draft, to: reminder)
+            try eventStore.save(reminder, commit: true)
+        }.value
+    }
+
+    func complete(id: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            try await Self.requestReminderAccessIfNeeded(using: eventStore)
+            guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
+                throw HomePanelDataError.reminderNotFound
+            }
+            reminder.isCompleted = true
+            reminder.completionDate = Date()
+            try eventStore.save(reminder, commit: true)
+        }.value
+    }
+
+    func delete(id: String) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            try await Self.requestReminderAccessIfNeeded(using: eventStore)
+            guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
+                throw HomePanelDataError.reminderNotFound
+            }
+            try eventStore.remove(reminder, commit: true)
+        }.value
+    }
+
+    private static func requestReminderAccessIfNeeded(using eventStore: EKEventStore) async throws {
+        switch EKEventStore.authorizationStatus(for: .reminder) {
+        case .fullAccess:
+            return
+        case .notDetermined:
+            let isGranted = try await requestFullReminderAccess(using: eventStore)
+            guard isGranted else { throw HomePanelDataError.remindersAccessDenied }
+        case .denied, .restricted, .writeOnly:
+            throw HomePanelDataError.remindersAccessDenied
+        @unknown default:
+            throw HomePanelDataError.remindersAccessDenied
+        }
+    }
+
+    private static func requestFullReminderAccess(using eventStore: EKEventStore) async throws -> Bool {
+        try await withCheckedThrowingContinuation { continuation in
+            eventStore.requestFullAccessToReminders { isGranted, error in
+                if let error {
+                    continuation.resume(throwing: error)
+                } else {
+                    continuation.resume(returning: isGranted)
+                }
+            }
+        }
+    }
+
+    private static func fetchReminders(matching predicate: NSPredicate, using eventStore: EKEventStore) async throws -> [EKReminder] {
+        try await withCheckedThrowingContinuation { continuation in
+            eventStore.fetchReminders(matching: predicate) { reminders in
+                continuation.resume(returning: reminders ?? [])
+            }
+        }
+    }
+
+    private nonisolated static func apply(_ draft: ReminderDraft, to reminder: EKReminder) {
+        reminder.title = draft.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        reminder.notes = draft.notes.trimmingCharacters(in: .whitespacesAndNewlines).nilIfEmpty
+        reminder.priority = draft.priority
+        reminder.dueDateComponents = draft.dueDate.map {
+            Calendar.current.dateComponents([.calendar, .timeZone, .year, .month, .day, .hour, .minute], from: $0)
         }
     }
 }
@@ -5064,6 +5576,8 @@ private enum HomePanelDataError: LocalizedError {
     case mailAutomationFailed(String)
     case mailNotRunning
     case mailScriptUnavailable
+    case remindersAccessDenied
+    case reminderNotFound
 
     var errorDescription: String? {
         switch self {
@@ -5077,6 +5591,10 @@ private enum HomePanelDataError: LocalizedError {
             "Open Mail to show inbox"
         case .mailScriptUnavailable:
             "Unable to prepare Mail automation"
+        case .remindersAccessDenied:
+            "Reminders access is required"
+        case .reminderNotFound:
+            "That reminder could not be found"
         }
     }
 }
@@ -6188,6 +6706,452 @@ private enum StockMarketError: LocalizedError {
             "Market data request failed"
         case .invalidResponse:
             "Market data response was not readable"
+        }
+    }
+}
+
+private struct RemindersPanel: View {
+    @StateObject private var viewModel = RemindersPanelViewModel()
+    @State private var isRefreshHovered = false
+    @State private var editingReminder: HomeReminderItem?
+    @State private var isCreatingReminder = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            header
+
+            if viewModel.isLoading && viewModel.reminders.isEmpty {
+                VStack(spacing: 12) {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(AppColor.white)
+
+                    Text("Reading Reminders")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.68))
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 14) {
+                        RemindersFocusSummaryCard(summary: viewModel.summary)
+
+                        VStack(alignment: .leading, spacing: 10) {
+                            Text("Open")
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(.white.opacity(0.58))
+
+                            if viewModel.reminders.isEmpty {
+                                Text(viewModel.statusMessage ?? "No open reminders due soon")
+                                    .font(.callout.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.66))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(14)
+                                    .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 14, style: .continuous))
+                            } else {
+                                ForEach(viewModel.reminders) { reminder in
+                                    ReminderRow(
+                                        reminder: reminder,
+                                        complete: {
+                                            Task { await viewModel.complete(reminder) }
+                                        },
+                                        edit: {
+                                            editingReminder = reminder
+                                        },
+                                        delete: {
+                                            Task { await viewModel.delete(reminder) }
+                                        }
+                                    )
+                                }
+                            }
+
+                            if let statusMessage = viewModel.statusMessage, !viewModel.reminders.isEmpty {
+                                Text(statusMessage)
+                                    .font(.caption.weight(.medium))
+                                    .foregroundStyle(.white.opacity(0.58))
+                            }
+                        }
+                    }
+                }
+                .scrollIndicators(.hidden)
+            }
+        }
+        .padding(Layout.panelPadding)
+        .frame(width: Layout.panelWidth, height: Layout.panelHeight)
+        .glassSurface(cornerRadius: Layout.panelCornerRadius)
+        .task {
+            await viewModel.refresh()
+        }
+        .sheet(isPresented: $isCreatingReminder) {
+            ReminderEditorSheet(
+                title: "New Reminder",
+                initialDraft: .empty,
+                saveTitle: "Create"
+            ) { draft in
+                await viewModel.create(draft)
+            }
+        }
+        .sheet(item: $editingReminder) { reminder in
+            ReminderEditorSheet(
+                title: "Edit Reminder",
+                initialDraft: ReminderDraft(reminder: reminder),
+                saveTitle: "Save"
+            ) { draft in
+                await viewModel.update(reminder, draft: draft)
+            }
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: Layout.headerSpacing) {
+            Image(systemName: "checklist")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(AppColor.white)
+                .frame(width: Layout.appIconSize, height: Layout.appIconSize)
+                .background(AppColor.black.opacity(0.2), in: Circle())
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Reminders")
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text(viewModel.headerSubtitle)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.white.opacity(0.56))
+            }
+
+            Spacer()
+
+            Button {
+                isCreatingReminder = true
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppColor.white)
+            }
+            .buttonStyle(.plain)
+            .frame(width: Layout.headerButtonSize, height: Layout.headerButtonSize)
+            .background(AppColor.black.opacity(0.2), in: Circle())
+            .cursor(.pointingHand)
+            .help("Create reminder")
+
+            Button {
+                Task { await viewModel.refresh() }
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(AppColor.white)
+            }
+            .buttonStyle(.plain)
+            .frame(width: Layout.headerButtonSize, height: Layout.headerButtonSize)
+            .background(AppColor.black.opacity(isRefreshHovered ? 0.32 : 0.2), in: Circle())
+            .cursor(.pointingHand)
+            .onHover { isRefreshHovered = $0 }
+            .help("Refresh reminders")
+        }
+    }
+}
+
+private struct RemindersFocusSummaryCard: View {
+    let summary: HomeRemindersSummary
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(spacing: 8) {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.system(size: 10, weight: .bold))
+                Text("Reminder priority")
+                    .font(.caption.weight(.medium))
+                Spacer()
+            }
+            .foregroundStyle(.white.opacity(0.56))
+
+            Text(summary.nextReminder?.title ?? "Nothing due soon")
+                .font(.largeTitle.weight(.bold))
+                .foregroundStyle(.white)
+                .lineLimit(2)
+                .minimumScaleFactor(0.74)
+
+            Text(summary.nextReminder?.dueText ?? summary.statusMessage ?? "Your reminder queue is clear.")
+                .font(.callout.weight(.medium))
+                .foregroundStyle(.white.opacity(0.72))
+        }
+        .padding(20)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(AppColor.black.opacity(0.2), in: .rect(cornerRadius: 22, style: .continuous))
+        .overlay {
+            RoundedRectangle(cornerRadius: 22, style: .continuous)
+                .stroke(AppColor.white.opacity(0.12), lineWidth: 1)
+        }
+    }
+}
+
+private struct ReminderRow: View {
+    let reminder: HomeReminderItem
+    let complete: () -> Void
+    let edit: () -> Void
+    let delete: () -> Void
+
+    @State private var isCompleteHovered = false
+    @State private var isEditHovered = false
+    @State private var isDeleteHovered = false
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Button(action: complete) {
+                Image(systemName: "circle")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(isCompleteHovered ? Color.green.opacity(0.95) : .white.opacity(0.62))
+                    .frame(width: 34, height: 34)
+                    .background(AppColor.black.opacity(isCompleteHovered ? 0.34 : 0.22), in: Circle())
+            }
+            .buttonStyle(.plain)
+            .cursor(.pointingHand)
+            .onHover { isCompleteHovered = $0 }
+            .help("Mark complete")
+
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 7) {
+                    Text(reminder.title)
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+
+                    if reminder.isHighPriority {
+                        Image(systemName: "exclamationmark.circle.fill")
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Color.orange)
+                    }
+                }
+
+                Text(reminder.dueText)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(reminder.isOverdue ? Color.orange.opacity(0.9) : .white.opacity(0.62))
+
+                if let notes = reminder.notes?.nilIfEmpty {
+                    Text(notes)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.48))
+                        .lineLimit(2)
+                }
+            }
+
+            Spacer(minLength: 0)
+
+            HStack(spacing: 6) {
+                ReminderIconButton(
+                    systemName: "pencil",
+                    isHovered: $isEditHovered,
+                    action: edit,
+                    help: "Edit reminder"
+                )
+
+                ReminderIconButton(
+                    systemName: "trash",
+                    isHovered: $isDeleteHovered,
+                    action: delete,
+                    help: "Delete reminder"
+                )
+            }
+        }
+        .padding(13)
+        .background(AppColor.black.opacity(0.18), in: .rect(cornerRadius: 15, style: .continuous))
+    }
+}
+
+private struct ReminderIconButton: View {
+    let systemName: String
+    @Binding var isHovered: Bool
+    let action: () -> Void
+    let help: String
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemName)
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.white.opacity(0.8))
+                .frame(width: 28, height: 28)
+                .background(AppColor.black.opacity(isHovered ? 0.34 : 0.18), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .cursor(.pointingHand)
+        .onHover { isHovered = $0 }
+        .help(help)
+    }
+}
+
+private struct ReminderEditorSheet: View {
+    let title: String
+    let initialDraft: ReminderDraft
+    let saveTitle: String
+    let save: (ReminderDraft) async -> Void
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var draft: ReminderDraft
+    @State private var hasDueDate: Bool
+    @State private var selectedDueDate: Date
+    @State private var isSaving = false
+
+    init(
+        title: String,
+        initialDraft: ReminderDraft,
+        saveTitle: String,
+        save: @escaping (ReminderDraft) async -> Void
+    ) {
+        self.title = title
+        self.initialDraft = initialDraft
+        self.saveTitle = saveTitle
+        self.save = save
+        _draft = State(initialValue: initialDraft)
+        _hasDueDate = State(initialValue: initialDraft.dueDate != nil)
+        _selectedDueDate = State(initialValue: initialDraft.dueDate ?? Date().addingTimeInterval(60 * 60))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text(title)
+                .font(.headline.weight(.semibold))
+                .foregroundStyle(.white)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Title")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.68))
+
+                TextField("Reminder title", text: $draft.title)
+                    .textFieldStyle(.plain)
+                    .foregroundStyle(.white)
+                    .tint(.white)
+                    .padding(10)
+                    .background(AppColor.black.opacity(0.24), in: .rect(cornerRadius: 10, style: .continuous))
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Notes")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.68))
+
+                TextEditor(text: $draft.notes)
+                    .font(.callout)
+                    .foregroundStyle(.white)
+                    .tint(.white)
+                    .scrollContentBackground(.hidden)
+                    .frame(height: 82)
+                    .padding(8)
+                    .background(AppColor.black.opacity(0.24), in: .rect(cornerRadius: 10, style: .continuous))
+            }
+
+            Toggle("Due date", isOn: $hasDueDate)
+                .toggleStyle(.checkbox)
+                .foregroundStyle(.white.opacity(0.82))
+
+            if hasDueDate {
+                DatePicker("", selection: $selectedDueDate)
+                    .datePickerStyle(.compact)
+                    .labelsHidden()
+            }
+
+            Picker("Priority", selection: $draft.priority) {
+                Text("None").tag(0)
+                Text("High").tag(1)
+                Text("Medium").tag(5)
+                Text("Low").tag(9)
+            }
+            .pickerStyle(.segmented)
+
+            HStack {
+                Button("Cancel") {
+                    dismiss()
+                }
+                .disabled(isSaving)
+
+                Spacer()
+
+                Button(saveTitle) {
+                    Task {
+                        isSaving = true
+                        draft.dueDate = hasDueDate ? selectedDueDate : nil
+                        await save(draft)
+                        isSaving = false
+                        dismiss()
+                    }
+                }
+                .disabled(isSaving || draft.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 430)
+        .background(Color(red: 0.08, green: 0.08, blue: 0.09))
+    }
+}
+
+@MainActor
+private final class RemindersPanelViewModel: ObservableObject {
+    @Published private(set) var summary = HomeRemindersSummary.loading
+    @Published private(set) var isLoading = false
+    @Published private(set) var actionError: String?
+
+    private let reader: HomeRemindersReading = HomeEventKitRemindersReader()
+
+    var reminders: [HomeReminderItem] {
+        summary.reminders
+    }
+
+    var statusMessage: String? {
+        actionError ?? summary.statusMessage
+    }
+
+    var headerSubtitle: String {
+        if isLoading {
+            return "Reading Reminders"
+        }
+
+        return summary.openCount == 1 ? "1 open reminder" : "\(summary.openCount) open reminders"
+    }
+
+    func refresh() async {
+        isLoading = true
+        actionError = nil
+        do {
+            summary = try await reader.summary()
+        } catch {
+            summary = .unavailable(error.localizedDescription)
+        }
+        isLoading = false
+    }
+
+    func create(_ draft: ReminderDraft) async {
+        await performMutation {
+            try await reader.create(draft)
+        }
+    }
+
+    func update(_ reminder: HomeReminderItem, draft: ReminderDraft) async {
+        await performMutation {
+            try await reader.update(id: reminder.id, draft: draft)
+        }
+    }
+
+    func complete(_ reminder: HomeReminderItem) async {
+        await performMutation {
+            try await reader.complete(id: reminder.id)
+        }
+    }
+
+    func delete(_ reminder: HomeReminderItem) async {
+        await performMutation {
+            try await reader.delete(id: reminder.id)
+        }
+    }
+
+    private func performMutation(_ mutation: () async throws -> Void) async {
+        actionError = nil
+        do {
+            try await mutation()
+            await refresh()
+        } catch {
+            actionError = error.localizedDescription
         }
     }
 }
@@ -8271,13 +9235,12 @@ private struct HomeAppleMapPreview: View {
 }
 
 private struct FocusCard: View {
-    let title: String
-    let subtitle: String
+    let plan: HomeFocusPlan
     let image: NSImage?
     let isGenerating: Bool
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
+        ZStack {
             Group {
                 if let image {
                     Image(nsImage: image)
@@ -8292,36 +9255,102 @@ private struct FocusCard: View {
 
             LinearGradient(
                 colors: [
-                    AppColor.black.opacity(0.08),
-                    AppColor.black.opacity(0.58),
+                    AppColor.black.opacity(0.32),
+                    AppColor.black.opacity(0.86),
                 ],
                 startPoint: .top,
                 endPoint: .bottom
             )
 
-            VStack(alignment: .leading, spacing: 7) {
-                HStack(spacing: 8) {
-                    Image(systemName: "scope")
-                        .font(.system(size: 13, weight: .semibold))
+            VStack(spacing: 16) {
+                VStack(spacing: 7) {
+                    Text(plan.title)
+                        .font(.system(size: 34, weight: .bold, design: .serif))
+                        .foregroundStyle(.white)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.68)
 
-                    Text(title)
-                        .font(.headline.weight(.semibold))
+                    TimelineView(.periodic(from: Date(), by: 30)) { timeline in
+                        Text(timingText(now: timeline.date))
+                            .font(.headline.weight(.semibold))
+                            .foregroundStyle(.white.opacity(0.76))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.78)
+                    }
                 }
-                .foregroundStyle(.white)
 
-                Text(subtitle)
+                ZStack {
+                    Circle()
+                        .fill(Color(red: 0.62, green: 0.65, blue: 0.74).opacity(0.88))
+                        .frame(width: 210, height: 210)
+                        .overlay {
+                            Circle()
+                                .stroke(Color(red: 0.25, green: 0.24, blue: 0.31).opacity(0.92), lineWidth: 30)
+                        }
+
+                    Image(systemName: symbolName)
+                        .font(.system(size: 74, weight: .semibold))
+                        .symbolRenderingMode(.hierarchical)
+                        .foregroundStyle(.white.opacity(0.92))
+                }
+
+                Text(plan.reason)
                     .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.white.opacity(0.78))
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.center)
                     .lineLimit(2)
+                    .frame(maxWidth: 430)
+
+                Button(action: {}) {
+                    HStack(spacing: 12) {
+                        Text(plan.actionTitle)
+                            .font(.headline.weight(.bold))
+
+                        Image(systemName: "play.fill")
+                            .font(.headline.weight(.bold))
+                    }
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 28)
+                    .frame(height: 54)
+                    .background(Color(red: 0.18, green: 0.15, blue: 0.15).opacity(0.92), in: .capsule)
+                }
+                .buttonStyle(.plain)
+                .cursor(.pointingHand)
             }
-            .padding(16)
+            .padding(22)
         }
-        .frame(height: Layout.focusCardHeight)
+        .frame(height: max(Layout.focusCardHeight, 440))
         .clipShape(.rect(cornerRadius: Layout.contentRowCornerRadius, style: .continuous))
         .overlay {
             RoundedRectangle(cornerRadius: Layout.contentRowCornerRadius, style: .continuous)
                 .stroke(AppColor.white.opacity(0.14), lineWidth: 1)
         }
+    }
+
+    private func timingText(now: Date) -> String {
+        if let startsAt = plan.startsAt, startsAt > now {
+            let minutes = max(1, Int(startsAt.timeIntervalSince(now) / 60))
+            return "\(startsAt.formatted(date: .omitted, time: .shortened)) - starts in \(minutes) min"
+        }
+
+        return "\(plan.durationMinutes) min focus block - \(plan.source.rawValue)"
+    }
+
+    private var symbolName: String {
+        let text = plan.title.lowercased()
+        if ["mail", "inbox", "email"].contains(where: { text.contains($0) }) {
+            return "envelope.fill"
+        }
+        if ["dinner", "lunch", "coffee", "meal"].contains(where: { text.contains($0) }) {
+            return "fork.knife"
+        }
+        if ["call", "meeting", "sync", "interview"].contains(where: { text.contains($0) }) {
+            return "person.2.fill"
+        }
+        if ["reminder", "task", "todo", "triage"].contains(where: { text.contains($0) }) {
+            return "checkmark.circle.fill"
+        }
+        return "sun.max.fill"
     }
 }
 
@@ -8408,7 +9437,7 @@ private extension SidebarItem {
     static let search = SidebarItem(systemName: "magnifyingglass", title: "Search")
     static let mail = SidebarItem(systemName: "mail.stack", title: "Mail")
     static let calendar = SidebarItem(systemName: "calendar", title: "Calendar")
-    static let stocks = SidebarItem(systemName: "chart.line.uptrend.xyaxis", title: "Markets")
+    static let reminders = SidebarItem(systemName: "checklist", title: "Reminders")
     static let knowledgeGraph = SidebarItem(systemName: "point.3.connected.trianglepath.dotted", title: "Knowledge")
     static let saved = SidebarItem(systemName: "bookmark", title: "Saved")
     static let settings = SidebarItem(systemName: "gearshape", title: "Settings")
@@ -8418,7 +9447,7 @@ private extension SidebarItem {
         .search,
         .mail,
         .calendar,
-        .stocks,
+        .reminders,
         .knowledgeGraph,
         .saved,
         .settings,
@@ -8430,6 +9459,47 @@ private extension String {
         let normalizedTitle = lowercased()
         return ["exam", "midterm", "final", "quiz", "deadline"].contains {
             normalizedTitle.contains($0)
+        }
+    }
+}
+
+private nonisolated extension HomeReminderItem {
+    init(reminder: EKReminder) {
+        let dueDate = reminder.dueDateComponents.flatMap { components in
+            Calendar.current.date(from: components)
+        }
+
+        self.init(
+            id: reminder.calendarItemIdentifier,
+            title: reminder.title.nilIfEmpty ?? "Untitled reminder",
+            dueDate: dueDate,
+            priority: reminder.priority,
+            notes: reminder.notes
+        )
+    }
+}
+
+private nonisolated extension Array where Element == HomeReminderItem {
+    var sortedForFocus: [HomeReminderItem] {
+        sorted { lhs, rhs in
+            if lhs.isOverdue != rhs.isOverdue {
+                return lhs.isOverdue
+            }
+
+            if lhs.isHighPriority != rhs.isHighPriority {
+                return lhs.isHighPriority
+            }
+
+            switch (lhs.dueDate, rhs.dueDate) {
+            case let (lhsDate?, rhsDate?):
+                return lhsDate < rhsDate
+            case (_?, nil):
+                return true
+            case (nil, _?):
+                return false
+            case (nil, nil):
+                return lhs.title.localizedCaseInsensitiveCompare(rhs.title) == .orderedAscending
+            }
         }
     }
 }

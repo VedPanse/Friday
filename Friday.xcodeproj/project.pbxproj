@@ -386,6 +386,8 @@
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Friday needs permission to show today's calendar events.";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Friday needs permission to show today's calendar events.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Friday needs permission to show reminders and recommend what to focus on next.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Friday needs permission to show reminders and recommend what to focus on next.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -422,6 +424,8 @@
 				INFOPLIST_KEY_NSCalendarsFullAccessUsageDescription = "Friday needs permission to show today's calendar events.";
 				INFOPLIST_KEY_NSCalendarsUsageDescription = "Friday needs permission to show today's calendar events.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_KEY_NSRemindersFullAccessUsageDescription = "Friday needs permission to show reminders and recommend what to focus on next.";
+				INFOPLIST_KEY_NSRemindersUsageDescription = "Friday needs permission to show reminders and recommend what to focus on next.";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

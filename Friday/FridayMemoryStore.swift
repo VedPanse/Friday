@@ -10,6 +10,8 @@ import Foundation
 actor FridayMemoryStore {
     static let shared = FridayMemoryStore()
 
+    private static let saveQueue = DispatchQueue(label: "com.vedpanse.Friday.memory-save", qos: .utility)
+
     private let fileURL: URL
     private var cachedMemories: [MemoryRecord]?
 
@@ -28,8 +30,11 @@ actor FridayMemoryStore {
         }
 
         do {
-            let data = try Data(contentsOf: fileURL)
-            let envelope = try JSONDecoder.friday.decode(MemoryEnvelope.self, from: data)
+            let fileURL = fileURL
+            let envelope = try await Task.detached(priority: .userInitiated) {
+                let data = try Data(contentsOf: fileURL)
+                return try JSONDecoder.friday.decode(MemoryEnvelope.self, from: data)
+            }.value
             cachedMemories = envelope.memories
             return envelope.memories
         } catch {
@@ -61,15 +66,19 @@ actor FridayMemoryStore {
     }
 
     private func save(_ memories: [MemoryRecord]) async {
-        do {
-            let directoryURL = fileURL.deletingLastPathComponent()
-            try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-            let envelope = MemoryEnvelope(version: 1, memories: memories)
-            let data = try JSONEncoder.friday.encode(envelope)
-            try data.write(to: fileURL, options: [.atomic])
-            cachedMemories = memories
-        } catch {
-            NSLog("Friday failed to save memory: \(error.localizedDescription)")
+        let fileURL = fileURL
+        let envelope = MemoryEnvelope(version: 1, memories: memories)
+        cachedMemories = memories
+
+        Self.saveQueue.async {
+            do {
+                let directoryURL = fileURL.deletingLastPathComponent()
+                try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+                let data = try JSONEncoder.friday.encode(envelope)
+                try data.write(to: fileURL, options: [.atomic])
+            } catch {
+                NSLog("Friday failed to save memory: \(error.localizedDescription)")
+            }
         }
     }
 }

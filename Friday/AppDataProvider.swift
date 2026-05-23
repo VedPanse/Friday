@@ -88,43 +88,45 @@ protocol MailReading {
     func inboxSummary() async throws -> MailSummary
 }
 
-private final class EventKitCalendarReader: CalendarReading {
-    private let eventStore = EKEventStore()
-
+private final class EventKitCalendarReader: CalendarReading, @unchecked Sendable {
     func todaySummary() async throws -> CalendarSummary {
-        try await requestCalendarAccessIfNeeded()
-        eventStore.refreshSourcesIfNecessary()
+        try await Task.detached(priority: .userInitiated) {
+            let eventStore = EKEventStore()
+            try await Self.requestCalendarAccessIfNeeded(using: eventStore)
+            eventStore.refreshSourcesIfNecessary()
 
-        let calendar = Calendar.current
-        let startOfDay = calendar.startOfDay(for: Date())
-        guard let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) else {
-            throw AppDataError.invalidDateRange
-        }
+            let calendar = Calendar.current
+            let now = Date()
+            let startOfDay = calendar.startOfDay(for: now)
+            guard let endOfDay = calendar.date(byAdding: .day, value: 1, to: startOfDay) else {
+                throw AppDataError.invalidDateRange
+            }
 
-        let allCalendars = eventStore.fridayAllEventCalendars()
-        let predicate = eventStore.predicateForEvents(
-            withStart: Date(),
-            end: endOfDay,
-            calendars: allCalendars.isEmpty ? nil : allCalendars
-        )
+            let allCalendars = eventStore.fridayAllEventCalendars()
+            let predicate = eventStore.predicateForEvents(
+                withStart: now,
+                end: endOfDay,
+                calendars: allCalendars.isEmpty ? nil : allCalendars
+            )
 
-        let events = eventStore.events(matching: predicate)
-            .filter { !$0.isAllDay }
-            .sorted { $0.startDate < $1.startDate }
+            let events = eventStore.events(matching: predicate)
+                .filter { !$0.isAllDay }
+                .sorted { $0.startDate < $1.startDate }
 
-        return CalendarSummary(
-            eventCount: events.count,
-            nextEventTitle: events.first?.title,
-            statusMessage: nil
-        )
+            return CalendarSummary(
+                eventCount: events.count,
+                nextEventTitle: events.first?.title,
+                statusMessage: nil
+            )
+        }.value
     }
 
-    private func requestCalendarAccessIfNeeded() async throws {
+    private static func requestCalendarAccessIfNeeded(using eventStore: EKEventStore) async throws {
         switch EKEventStore.authorizationStatus(for: .event) {
         case .fullAccess:
             return
         case .notDetermined:
-            let isGranted = try await requestFullCalendarAccess()
+            let isGranted = try await requestFullCalendarAccess(using: eventStore)
             guard isGranted else { throw AppDataError.calendarAccessDenied }
         case .denied, .restricted, .writeOnly:
             throw AppDataError.calendarAccessDenied
@@ -133,7 +135,7 @@ private final class EventKitCalendarReader: CalendarReading {
         }
     }
 
-    private func requestFullCalendarAccess() async throws -> Bool {
+    private static func requestFullCalendarAccess(using eventStore: EKEventStore) async throws -> Bool {
         try await withCheckedThrowingContinuation { continuation in
             eventStore.requestFullAccessToEvents { isGranted, error in
                 if let error {
