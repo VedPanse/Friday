@@ -712,8 +712,8 @@ struct KnowledgeGraphPanel: View {
 
                 Menu {
                     Toggle("Topics", isOn: $displayOptions.showsTopics)
-                    Toggle("Concepts", isOn: $displayOptions.showsConcepts)
                     Toggle("Sub topics", isOn: $displayOptions.showsSubtopics)
+                    Toggle("Concepts", isOn: $displayOptions.showsConcepts)
 
                     Divider()
 
@@ -1316,9 +1316,11 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
                     updateCheckboxCursor(isHovering: isHovering)
                 }
                 Text(node.label)
+                    .textSelection(.enabled)
             }
             Text(node.description)
                 .foregroundStyle(.secondary)
+                .textSelection(.enabled)
 
 
             if !childNodes.isEmpty {
@@ -1337,6 +1339,7 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
                 }
             }
         }
+        .textSelection(.enabled)
         .padding(18)
         .frame(width: 260, height: 680)
         .knowledgeGraphGlass(cornerRadius: 26)
@@ -1380,9 +1383,11 @@ private struct KnowledgeGraphRelatedNodeRow: View {
                 .foregroundStyle(isHovered ? .white : .secondary)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
+                .textSelection(.enabled)
 
             Spacer(minLength: 0)
         }
+        .textSelection(.enabled)
         .contentShape(Rectangle())
         .onTapGesture(perform: select)
         .onHover { isHovering in
