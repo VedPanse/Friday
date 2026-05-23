@@ -932,8 +932,11 @@ private struct KnowledgeGraphCanvas: View {
         GeometryReader { geometry in
             ZStack {
                 KnowledgeGraphInteractionView(
-                    nodeHitRegions: nodeHitRegions(in: geometry.size),
+                    nodeHitTargets: nodeHitTargets(in: geometry.size),
                     passthroughHitRegions: passthroughHitRegions(geometry.size),
+                    onNodeSelected: { nodeID in
+                        selectedNodeID = nodeID
+                    },
                     onScroll: { delta, location in
                         zoom(by: delta, around: location, in: geometry.size)
                     },
@@ -1065,16 +1068,19 @@ private struct KnowledgeGraphCanvas: View {
         )
     }
 
-    private func nodeHitRegions(in size: CGSize) -> [CGRect] {
+    private func nodeHitTargets(in size: CGSize) -> [KnowledgeGraphNodeHitTarget] {
         nodes.map { node in
             let point = screenPoint(for: node, in: size)
             let width: CGFloat = node.kind == .topic ? 92 : 78
             let height: CGFloat = shouldShowLabels ? 96 : 44
-            return CGRect(
-                x: point.x - width / 2,
-                y: point.y - 26,
-                width: width,
-                height: height
+            return KnowledgeGraphNodeHitTarget(
+                nodeID: node.id,
+                rect: CGRect(
+                    x: point.x - width / 2,
+                    y: point.y - 26,
+                    width: width,
+                    height: height
+                )
             )
         }
     }
@@ -1549,8 +1555,9 @@ private struct KnowledgeGraphNodeView: View {
 }
 
 private struct KnowledgeGraphInteractionView: NSViewRepresentable {
-    let nodeHitRegions: [CGRect]
+    let nodeHitTargets: [KnowledgeGraphNodeHitTarget]
     let passthroughHitRegions: [CGRect]
+    let onNodeSelected: (String) -> Void
     let onScroll: (CGFloat, CGPoint) -> Void
     let onPanChanged: (CGSize) -> Void
     let onPanEnded: () -> Void
@@ -1559,8 +1566,9 @@ private struct KnowledgeGraphInteractionView: NSViewRepresentable {
 
     func makeNSView(context: Context) -> GraphInteractionNSView {
         let view = GraphInteractionNSView()
-        view.nodeHitRegions = nodeHitRegions
+        view.nodeHitTargets = nodeHitTargets
         view.passthroughHitRegions = passthroughHitRegions
+        view.onNodeSelected = onNodeSelected
         view.onScroll = onScroll
         view.onPanChanged = onPanChanged
         view.onPanEnded = onPanEnded
@@ -1570,8 +1578,9 @@ private struct KnowledgeGraphInteractionView: NSViewRepresentable {
     }
 
     func updateNSView(_ nsView: GraphInteractionNSView, context: Context) {
-        nsView.nodeHitRegions = nodeHitRegions
+        nsView.nodeHitTargets = nodeHitTargets
         nsView.passthroughHitRegions = passthroughHitRegions
+        nsView.onNodeSelected = onNodeSelected
         nsView.onScroll = onScroll
         nsView.onPanChanged = onPanChanged
         nsView.onPanEnded = onPanEnded
@@ -1580,9 +1589,15 @@ private struct KnowledgeGraphInteractionView: NSViewRepresentable {
     }
 }
 
+private struct KnowledgeGraphNodeHitTarget {
+    let nodeID: String
+    let rect: CGRect
+}
+
 private final class GraphInteractionNSView: NSView {
-    var nodeHitRegions: [CGRect] = []
+    var nodeHitTargets: [KnowledgeGraphNodeHitTarget] = []
     var passthroughHitRegions: [CGRect] = []
+    var onNodeSelected: ((String) -> Void)?
     var onScroll: ((CGFloat, CGPoint) -> Void)?
     var onPanChanged: ((CGSize) -> Void)?
     var onPanEnded: (() -> Void)?
@@ -1645,7 +1660,7 @@ private final class GraphInteractionNSView: NSView {
                 return nil
 
             case .leftMouseDown:
-                guard !isNodeHit(at: location) else {
+                guard nodeHitTarget(at: location) == nil else {
                     panStartLocation = nil
                     return event
                 }
@@ -1665,6 +1680,12 @@ private final class GraphInteractionNSView: NSView {
                 return nil
 
             case .leftMouseUp:
+                if let nodeID = nodeHitTarget(at: location)?.nodeID {
+                    panStartLocation = nil
+                    onNodeSelected?(nodeID)
+                    return event
+                }
+
                 guard panStartLocation != nil else {
                     return event
                 }
@@ -1686,8 +1707,8 @@ private final class GraphInteractionNSView: NSView {
         }
     }
 
-    private func isNodeHit(at location: CGPoint) -> Bool {
-        nodeHitRegions.contains { $0.contains(location) }
+    private func nodeHitTarget(at location: CGPoint) -> KnowledgeGraphNodeHitTarget? {
+        nodeHitTargets.first { $0.rect.contains(location) }
     }
 
     private func isPassthroughHit(at location: CGPoint) -> Bool {
