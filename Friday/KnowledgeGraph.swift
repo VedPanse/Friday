@@ -15,6 +15,7 @@ protocol Node: AnyObject, Identifiable {
     var label: String { get set }
     var path: URL? { get set }
     var done: Bool { get set }
+    var description: String { get set }
     var children: [any Node]? { get set }
 }
 
@@ -23,11 +24,13 @@ final class TopicNode: Node {
     var label = ""
     var path: URL?
     var done = false
+    var description = ""
     var children: [any Node]? = []
 
-    convenience init(label: String, children: [any Node] = []) {
+    convenience init(label: String, description: String = "", children: [any Node] = []) {
         self.init()
         self.label = label
+        self.description = description
         self.children = children
     }
 
@@ -45,15 +48,17 @@ final class ConceptNode: Node {
     var label = ""
     var path: URL?
     var done = false
+    var description = ""
     var children: [any Node]? {
         get { nil }
         set { }
     }
     let createdAt = Date()
 
-    convenience init(label: String) {
+    convenience init(label: String, description: String = "") {
         self.init()
         self.label = label
+        self.description = description
     }
 }
 
@@ -62,45 +67,48 @@ final class KnowledgeGraph: ObservableObject {
 
     static var sample: KnowledgeGraph {
         let graph = KnowledgeGraph()
-        let capTheorem = ConceptNode(label: "CAP theorem")
+        let capTheorem = ConceptNode(
+            label: "CAP theorem",
+            description: "A distributed systems tradeoff between consistency, availability, and partition tolerance."
+        )
         capTheorem.done = true
 
-        let scalability = TopicNode(label: "Scalability", children: [
-            TopicNode(label: "Distributed Systems", children: [
+        let scalability = TopicNode(label: "Scalability", description: "Techniques for keeping systems reliable and responsive as demand grows.", children: [
+            TopicNode(label: "Distributed Systems", description: "Architectures that coordinate work across multiple networked machines.", children: [
                 capTheorem,
-                ConceptNode(label: "Consistent hashing"),
-                ConceptNode(label: "Quorum reads"),
-                ConceptNode(label: "Leader election"),
+                ConceptNode(label: "Consistent hashing", description: "A key distribution strategy that reduces remapping when nodes join or leave."),
+                ConceptNode(label: "Quorum reads", description: "A replication read strategy requiring responses from enough replicas to trust a value."),
+                ConceptNode(label: "Leader election", description: "A coordination process for choosing one node to make authoritative decisions."),
             ]),
-            TopicNode(label: "Databases", children: [
-                ConceptNode(label: "Sharding"),
-                ConceptNode(label: "Replication"),
-                ConceptNode(label: "Indexing"),
+            TopicNode(label: "Databases", description: "Storage systems for organizing, querying, and protecting application data.", children: [
+                ConceptNode(label: "Sharding", description: "Splitting data across partitions so storage and traffic can scale horizontally."),
+                ConceptNode(label: "Replication", description: "Keeping copies of data on multiple machines for durability and availability."),
+                ConceptNode(label: "Indexing", description: "Maintaining lookup structures that make reads faster for selected access patterns."),
             ]),
-            ConceptNode(label: "Load balancing"),
-            ConceptNode(label: "Backpressure"),
+            ConceptNode(label: "Load balancing", description: "Routing work across resources to avoid hotspots and improve availability."),
+            ConceptNode(label: "Backpressure", description: "Signaling overload upstream so producers slow down before consumers fail."),
         ])
 
-        let ai = TopicNode(label: "AI", children: [
-            TopicNode(label: "Machine Learning", children: [
-                ConceptNode(label: "Gradient descent"),
-                ConceptNode(label: "Overfitting"),
-                ConceptNode(label: "Embeddings"),
+        let ai = TopicNode(label: "AI", description: "Methods for building systems that perceive, reason, generate, or act from data.", children: [
+            TopicNode(label: "Machine Learning", description: "Algorithms that improve behavior by fitting patterns from examples.", children: [
+                ConceptNode(label: "Gradient descent", description: "An optimization method that updates parameters in the direction of lower loss."),
+                ConceptNode(label: "Overfitting", description: "When a model memorizes training data patterns that do not generalize well."),
+                ConceptNode(label: "Embeddings", description: "Vector representations that encode semantic similarity for search and modeling."),
             ]),
-            TopicNode(label: "Agents", children: [
-                ConceptNode(label: "Planning"),
-                ConceptNode(label: "Tool use"),
-                ConceptNode(label: "Memory"),
-                ConceptNode(label: "RAG"),
+            TopicNode(label: "Agents", description: "AI systems that choose actions, use tools, and maintain context toward a goal.", children: [
+                ConceptNode(label: "Planning", description: "Breaking a goal into ordered steps and adjusting as new information arrives."),
+                ConceptNode(label: "Tool use", description: "Calling external capabilities such as search, code execution, or APIs to complete work."),
+                ConceptNode(label: "Memory", description: "Persisting useful context so future interactions can build on past information."),
+                ConceptNode(label: "RAG", description: "Retrieval-augmented generation that grounds model responses in fetched source material."),
             ]),
-            ConceptNode(label: "Transformers"),
+            ConceptNode(label: "Transformers", description: "Neural network architectures built around attention over token sequences."),
         ])
 
-        let systemDesign = TopicNode(label: "System Design", children: [
-            ConceptNode(label: "Caching"),
-            ConceptNode(label: "Queues"),
-            ConceptNode(label: "Observability"),
-            ConceptNode(label: "Rate limiting"),
+        let systemDesign = TopicNode(label: "System Design", description: "Designing software architecture around reliability, scale, cost, and operations.", children: [
+            ConceptNode(label: "Caching", description: "Storing expensive results closer to callers to reduce latency and load."),
+            ConceptNode(label: "Queues", description: "Decoupling producers and consumers so work can be processed asynchronously."),
+            ConceptNode(label: "Observability", description: "Using logs, metrics, and traces to understand system behavior in production."),
+            ConceptNode(label: "Rate limiting", description: "Controlling request volume to protect services and enforce fair usage."),
         ])
 
         graph.topics = [scalability, ai, systemDesign]
@@ -111,8 +119,50 @@ final class KnowledgeGraph: ObservableObject {
         topics.append(topic)
     }
 
+    func setDone(_ isDone: Bool, forNodeID nodeID: String) {
+        guard let node = findNode(withID: nodeID) else { return }
+        objectWillChange.send()
+        setDone(isDone, for: node)
+    }
+
     func save() {
         // Persistence will be added once Friday starts learning graph nodes from user material.
+    }
+
+    private func findNode(withID nodeID: String) -> (any Node)? {
+        for topic in topics {
+            if topic.id == nodeID {
+                return topic
+            }
+
+            if let node = findNode(withID: nodeID, in: topic.children ?? []) {
+                return node
+            }
+        }
+
+        return nil
+    }
+
+    private func findNode(withID nodeID: String, in nodes: [any Node]) -> (any Node)? {
+        for node in nodes {
+            if node.id == nodeID {
+                return node
+            }
+
+            if let child = findNode(withID: nodeID, in: node.children ?? []) {
+                return child
+            }
+        }
+
+        return nil
+    }
+
+    private func setDone(_ isDone: Bool, for node: any Node) {
+        node.done = isDone
+
+        for child in node.children ?? [] {
+            setDone(isDone, for: child)
+        }
     }
 }
 
@@ -134,6 +184,9 @@ struct KnowledgeGraphPanel: View {
                 KnowledgeGraphNodeDetailsIsland(
                     node: selectedNode,
                     relatedNodes: relatedNodes(for: selectedNode, in: layout),
+                    setDone: { isDone in
+                        graph.setDone(isDone, forNodeID: selectedNode.id)
+                    },
                     close: {
                         selectedNodeID = nil
                     }
@@ -567,6 +620,7 @@ private struct KnowledgeGraphCanvas: View {
 private struct KnowledgeGraphNodeDetailsIsland: View {
     let node: KnowledgeGraphDisplayNode
     let relatedNodes: [KnowledgeGraphRelatedNode]
+    let setDone: (Bool) -> Void
     let close: () -> Void
 
     @State private var isCloseHovered = false
@@ -581,21 +635,40 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
     }
 
     private var nodeColor: Color {
-        switch node.kind {
-        case .topic:
-            return KnowledgeGraphColor.topic
-        case .concept:
-            return KnowledgeGraphColor.concept
-        }
+        node.graphColor
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            if (node.done) {
-                Image(systemName: "checkmark.circle")
-                    .foregroundColor(.green)
+            HStack {
+                Button {
+                    setDone(!node.done)
+                } label: {
+                    ZStack {
+                        Circle()
+                            .fill(node.done ? Color.green : Color.clear)
+                            .frame(width: 16, height: 16)
+                            .overlay {
+                                Circle()
+                                    .stroke(node.done ? Color.green : Color.secondary.opacity(0.7), lineWidth: 1.4)
+                            }
+
+                        if node.done {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                        }
+                    }
+                    .frame(width: 24, height: 24)
+                    .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(node.done ? "Mark not done" : "Mark done")
+                Text(node.label)
             }
-            Text(node.label)
+            Text(node.description)
+                .foregroundStyle(.secondary)
+
 
             if node.kind == .topic {
                 ForEach(relatedNodes) { relatedNode in
@@ -631,7 +704,7 @@ private struct KnowledgeGraphNodeView: View {
     @State private var isBreathing = false
 
     private var nodeColor: Color {
-        node.kind == .topic ? KnowledgeGraphColor.topic : KnowledgeGraphColor.concept
+        node.graphColor
     }
 
     private var nodeDiameter: CGFloat {
@@ -985,9 +1058,11 @@ struct ConceptNodeView: View {
             node: KnowledgeGraphDisplayNode(
                 id: concept.id,
                 label: concept.label,
+                description: concept.description,
                 done: concept.done,
                 kind: .concept,
                 depth: 0,
+                hasChildren: false,
                 position: UnitPoint(x: 0.5, y: 0.5)
             ),
             isSelected: false,
@@ -1070,16 +1145,19 @@ private struct KnowledgeGraphLayout {
         edges: inout [KnowledgeGraphEdge]
     ) {
         let kind: KnowledgeGraphDisplayNode.Kind = node is TopicNode ? .topic : .concept
+        let children = node.children ?? []
         nodes.append(KnowledgeGraphDisplayNode(
             id: node.id,
             label: node.label,
+            description: node.description,
             done: node.done,
             kind: kind,
             depth: depth,
+            hasChildren: !children.isEmpty,
             position: position
         ))
 
-        guard let children = node.children, !children.isEmpty else {
+        guard !children.isEmpty else {
             return
         }
 
@@ -1116,10 +1194,24 @@ private struct KnowledgeGraphDisplayNode: Identifiable, Equatable {
 
     let id: String
     let label: String
+    let description: String
     let done: Bool
     let kind: Kind
     let depth: Int
+    let hasChildren: Bool
     let position: UnitPoint
+
+    var graphColor: Color {
+        if depth == 0 {
+            return KnowledgeGraphColor.root
+        }
+
+        guard hasChildren else {
+            return KnowledgeGraphColor.leaf
+        }
+
+        return KnowledgeGraphColor.middleColor(forDepth: depth)
+    }
 
     var displayLabel: String {
         label
@@ -1147,9 +1239,11 @@ private enum KnowledgeGraphTree {
             let current = KnowledgeGraphDisplayNode(
                 id: node.id,
                 label: node.label,
+                description: node.description,
                 done: node.done,
                 kind: kind,
                 depth: 0,
+                hasChildren: !(node.children ?? []).isEmpty,
                 position: UnitPoint(x: 0.5, y: 0.5)
             )
             return [current] + flatten(node.children ?? [])
@@ -1158,8 +1252,23 @@ private enum KnowledgeGraphTree {
 }
 
 private enum KnowledgeGraphColor {
-    static let topic = Color.accentColor
-    static let concept = Color.gray.opacity(0.8)
+    static let root = Color(red: 0.29, green: 0.18, blue: 0.86)
+    static let violet = Color(red: 0.56, green: 0.25, blue: 0.95)
+    static let leaf = Color.gray.opacity(0.8)
+
+    private static let middlePalette = [
+        violet,
+        Color(red: 0.10, green: 0.42, blue: 0.92),
+        Color(red: 0.03, green: 0.62, blue: 0.94),
+        Color(red: 0.12, green: 0.68, blue: 0.28),
+        Color(red: 0.95, green: 0.78, blue: 0.18),
+        Color(red: 0.96, green: 0.48, blue: 0.14),
+        root,
+    ]
+
+    static func middleColor(forDepth depth: Int) -> Color {
+        middlePalette[(max(depth, 1) - 1) % middlePalette.count]
+    }
 }
 
 private extension UnitPoint {
