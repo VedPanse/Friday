@@ -75,6 +75,7 @@ final class KnowledgeGraph: ObservableObject {
     @Published var topics: [TopicNode] = []
     @Published var generatedTopic: String?
     @Published var generatedDepth: KnowledgeGraphUnderstandingDepth?
+    @Published var displayOptions = KnowledgeGraphDisplayOptions()
 
     private let store: KnowledgeGraphStore
     private var rawOpenAIResponse: String?
@@ -91,7 +92,13 @@ final class KnowledgeGraph: ObservableObject {
             generatedTopic = snapshot.topic
             generatedDepth = snapshot.depth.flatMap(KnowledgeGraphUnderstandingDepth.init(rawValue:))
             rawOpenAIResponse = snapshot.rawOpenAIResponse
+            displayOptions = snapshot.displayOptions ?? KnowledgeGraphDisplayOptions()
         }
+    }
+
+    func setDisplayOptions(_ displayOptions: KnowledgeGraphDisplayOptions) {
+        self.displayOptions = displayOptions
+        save(rawResponse: nil)
     }
 
     func append(with generatedGraph: GeneratedKnowledgeGraph, topic: String, depth: KnowledgeGraphUnderstandingDepth, rawResponse: String) {
@@ -133,6 +140,7 @@ final class KnowledgeGraph: ObservableObject {
             depth: generatedDepth?.rawValue,
             generatedAt: Date(),
             rawOpenAIResponse: self.rawOpenAIResponse,
+            displayOptions: displayOptions,
             topics: topics.map(Self.codableNode(from:))
         )
         store.save(snapshot)
@@ -302,6 +310,7 @@ private struct KnowledgeGraphSnapshot: Codable {
     let depth: String?
     let generatedAt: Date
     let rawOpenAIResponse: String?
+    let displayOptions: KnowledgeGraphDisplayOptions?
     let topics: [KnowledgeGraphCodableNode]
 }
 
@@ -595,7 +604,13 @@ struct KnowledgeGraphPanel: View {
     @State private var generationError: String?
     @State private var isGenerating = false
     @State private var isAddButtonCursorPushed = false
-    @State private var displayOptions = KnowledgeGraphDisplayOptions()
+    @State private var displayOptions: KnowledgeGraphDisplayOptions
+
+    init() {
+        let graph = KnowledgeGraph()
+        _graph = StateObject(wrappedValue: graph)
+        _displayOptions = State(initialValue: graph.displayOptions)
+    }
 
     private var layout: KnowledgeGraphLayout {
         KnowledgeGraphLayout(graph: graph, displayOptions: displayOptions)
@@ -631,6 +646,7 @@ struct KnowledgeGraphPanel: View {
             generateGraphDialog
         }
         .onChange(of: displayOptions) { _, _ in
+            graph.setDisplayOptions(displayOptions)
             if let selectedNodeID, !layout.nodes.contains(where: { $0.id == selectedNodeID }) {
                 self.selectedNodeID = nil
             }
@@ -1983,13 +1999,13 @@ private struct KnowledgeGraphLayout {
     }
 }
 
-private struct KnowledgeGraphDisplayOptions: Equatable {
+struct KnowledgeGraphDisplayOptions: Codable, Equatable {
     var showsTopics = true
     var showsConcepts = true
     var showsSubtopics = true
     var onlyIncomplete = false
 
-    func includes(_ node: KnowledgeGraphDisplayNode) -> Bool {
+    fileprivate func includes(_ node: KnowledgeGraphDisplayNode) -> Bool {
         if onlyIncomplete, node.done {
             return false
         }
