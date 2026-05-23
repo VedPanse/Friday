@@ -86,15 +86,24 @@ final class KnowledgeGraph: ObservableObject {
     private init(store: KnowledgeGraphStore) {
         self.store = store
         if let snapshot = store.load() {
-            topics = snapshot.topics.map(Self.topicNode(from:))
+            var conceptRegistry: [String: ConceptNode] = [:]
+            topics = snapshot.topics.map { Self.topicNode(from: $0, conceptRegistry: &conceptRegistry) }
             generatedTopic = snapshot.topic
             generatedDepth = snapshot.depth.flatMap(KnowledgeGraphUnderstandingDepth.init(rawValue:))
             rawOpenAIResponse = snapshot.rawOpenAIResponse
         }
     }
 
-    func replace(with generatedGraph: GeneratedKnowledgeGraph, topic: String, depth: KnowledgeGraphUnderstandingDepth, rawResponse: String) {
-        topics = generatedGraph.topics.map(Self.topicNode(from:))
+    func append(with generatedGraph: GeneratedKnowledgeGraph, topic: String, depth: KnowledgeGraphUnderstandingDepth, rawResponse: String) {
+        var conceptRegistry = conceptRegistryByLabel()
+        for generatedRoot in generatedGraph.topics.map({ Self.topicNode(from: $0, conceptRegistry: &conceptRegistry) }) {
+            if let existingRoot = topics.first(where: { Self.normalizedLabel($0.label) == Self.normalizedLabel(generatedRoot.label) }) {
+                mergeChildren(from: generatedRoot, into: existingRoot, conceptRegistry: &conceptRegistry)
+            } else {
+                topics.append(generatedRoot)
+                registerConcepts(in: generatedRoot, conceptRegistry: &conceptRegistry)
+            }
+        }
         generatedTopic = topic
         generatedDepth = depth
         self.rawOpenAIResponse = rawResponse
@@ -165,21 +174,69 @@ final class KnowledgeGraph: ObservableObject {
         }
     }
 
-    private static func topicNode(from node: KnowledgeGraphCodableNode) -> TopicNode {
+    private func conceptRegistryByLabel() -> [String: ConceptNode] {
+        var registry: [String: ConceptNode] = [:]
+        for topic in topics {
+            registerConcepts(in: topic, conceptRegistry: &registry)
+        }
+        return registry
+    }
+
+    private func registerConcepts(in node: any Node, conceptRegistry: inout [String: ConceptNode]) {
+        if let concept = node as? ConceptNode {
+            conceptRegistry[Self.normalizedLabel(concept.label)] = concept
+        }
+
+        for child in node.children ?? [] {
+            registerConcepts(in: child, conceptRegistry: &conceptRegistry)
+        }
+    }
+
+    private func mergeChildren(from source: TopicNode, into destination: TopicNode, conceptRegistry: inout [String: ConceptNode]) {
+        for sourceChild in source.children ?? [] {
+            if let sourceTopic = sourceChild as? TopicNode {
+                if let destinationTopic = (destination.children ?? []).compactMap({ $0 as? TopicNode }).first(where: {
+                    Self.normalizedLabel($0.label) == Self.normalizedLabel(sourceTopic.label)
+                }) {
+                    mergeChildren(from: sourceTopic, into: destinationTopic, conceptRegistry: &conceptRegistry)
+                } else {
+                    destination.children?.append(sourceTopic)
+                    registerConcepts(in: sourceTopic, conceptRegistry: &conceptRegistry)
+                }
+                continue
+            }
+
+            if let sourceConcept = sourceChild as? ConceptNode {
+                let key = Self.normalizedLabel(sourceConcept.label)
+                let sharedConcept = conceptRegistry[key] ?? sourceConcept
+                conceptRegistry[key] = sharedConcept
+                if !(destination.children ?? []).contains(where: { $0.id == sharedConcept.id }) {
+                    destination.children?.append(sharedConcept)
+                }
+            }
+        }
+    }
+
+    private static func topicNode(
+        from node: KnowledgeGraphCodableNode,
+        conceptRegistry: inout [String: ConceptNode]
+    ) -> TopicNode {
         let topic = TopicNode(id: node.id)
         topic.label = node.label
         topic.description = node.description
         topic.done = node.done
         topic.children = node.children.map { child in
             if child.children.isEmpty {
-                let concept = ConceptNode(id: child.id)
-                concept.label = child.label
-                concept.description = child.description
-                concept.done = child.done
+                let key = normalizedLabel(child.label)
+                let concept = conceptRegistry[key] ?? ConceptNode(id: child.id)
+                concept.label = concept.label.isEmpty ? child.label : concept.label
+                concept.description = concept.description.isEmpty ? child.description : concept.description
+                concept.done = concept.done || child.done
+                conceptRegistry[key] = concept
                 return concept
             }
 
-            return topicNode(from: child)
+            return topicNode(from: child, conceptRegistry: &conceptRegistry)
         }
         return topic
     }
@@ -192,6 +249,11 @@ final class KnowledgeGraph: ObservableObject {
             done: node.done,
             children: (node.children ?? []).map(Self.codableNode(from:))
         )
+    }
+
+    private static func normalizedLabel(_ label: String) -> String {
+        label.trimmingCharacters(in: .whitespacesAndNewlines)
+            .folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
     }
 }
 
@@ -773,7 +835,7 @@ struct KnowledgeGraphPanel: View {
             do {
                 let result = try await KnowledgeGraphOpenAIClient().generateGraph(topic: topic, depth: requestedDepth)
                 await MainActor.run {
-                    graph.replace(with: result.graph, topic: topic, depth: requestedDepth, rawResponse: result.rawResponse)
+                    graph.append(with: result.graph, topic: topic, depth: requestedDepth, rawResponse: result.rawResponse)
                     selectedNodeID = nil
                     isGenerating = false
                     isShowingGenerateDialog = false
@@ -1753,6 +1815,7 @@ private struct KnowledgeGraphLayout {
 
         var nodes: [KnowledgeGraphDisplayNode] = []
         var edges: [KnowledgeGraphEdge] = []
+        var renderedNodeIDs = Set<String>()
 
         for (index, root) in roots.enumerated() {
             let rootPosition = rootPositions[safe: index] ?? UnitPoint(x: 0.5, y: 0.5)
@@ -1762,7 +1825,8 @@ private struct KnowledgeGraphLayout {
                 position: rootPosition,
                 angleRange: Self.angleRange(forRootAt: index),
                 nodes: &nodes,
-                edges: &edges
+                edges: &edges,
+                renderedNodeIDs: &renderedNodeIDs
             )
         }
 
@@ -1787,8 +1851,14 @@ private struct KnowledgeGraphLayout {
         position: UnitPoint,
         angleRange: ClosedRange<Double>,
         nodes: inout [KnowledgeGraphDisplayNode],
-        edges: inout [KnowledgeGraphEdge]
+        edges: inout [KnowledgeGraphEdge],
+        renderedNodeIDs: inout Set<String>
     ) {
+        guard !renderedNodeIDs.contains(node.id) else {
+            return
+        }
+        renderedNodeIDs.insert(node.id)
+
         let kind: KnowledgeGraphDisplayNode.Kind = node is TopicNode ? .topic : .concept
         let children = node.children ?? []
         nodes.append(KnowledgeGraphDisplayNode(
@@ -1825,7 +1895,8 @@ private struct KnowledgeGraphLayout {
                 position: childPosition,
                 angleRange: (angleRange.lowerBound + step * Double(index) - 62)...(angleRange.lowerBound + step * Double(index) + 62),
                 nodes: &nodes,
-                edges: &edges
+                edges: &edges,
+                renderedNodeIDs: &renderedNodeIDs
             )
         }
     }
