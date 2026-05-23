@@ -595,9 +595,10 @@ struct KnowledgeGraphPanel: View {
     @State private var generationError: String?
     @State private var isGenerating = false
     @State private var isAddButtonCursorPushed = false
+    @State private var displayOptions = KnowledgeGraphDisplayOptions()
 
     private var layout: KnowledgeGraphLayout {
-        KnowledgeGraphLayout(graph: graph)
+        KnowledgeGraphLayout(graph: graph, displayOptions: displayOptions)
     }
 
     var body: some View {
@@ -628,6 +629,11 @@ struct KnowledgeGraphPanel: View {
         .sheet(isPresented: $isShowingGenerateDialog) {
             generateGraphDialog
         }
+        .onChange(of: displayOptions) { _, _ in
+            if let selectedNodeID, !layout.nodes.contains(where: { $0.id == selectedNodeID }) {
+                self.selectedNodeID = nil
+            }
+        }
     }
 
     private func graphIsland(layout: KnowledgeGraphLayout) -> some View {
@@ -642,9 +648,9 @@ struct KnowledgeGraphPanel: View {
                 passthroughHitRegions: { size in
                     [
                         CGRect(
-                            x: size.width - 88,
+                            x: size.width - 150,
                             y: 0,
-                            width: 88,
+                            width: 150,
                             height: 88
                         ),
                     ]
@@ -701,8 +707,30 @@ struct KnowledgeGraphPanel: View {
 
     private var addTopicButton: some View {
         VStack {
-            HStack {
+            HStack(spacing: 10) {
                 Spacer()
+
+                Menu {
+                    Toggle("Topics", isOn: $displayOptions.showsTopics)
+                    Toggle("Concepts", isOn: $displayOptions.showsConcepts)
+                    Toggle("Sub topics", isOn: $displayOptions.showsSubtopics)
+
+                    Divider()
+
+                    Toggle("Render only incomplete", isOn: $displayOptions.onlyIncomplete)
+                } label: {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .contentShape(Circle())
+                }
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
+                .knowledgeGraphCircularGlass()
+                .accessibilityLabel("Graph display settings")
 
                 Button {
                     generationError = nil
@@ -1805,7 +1833,7 @@ private struct KnowledgeGraphLayout {
     let nodes: [KnowledgeGraphDisplayNode]
     let edges: [KnowledgeGraphEdge]
 
-    init(graph: KnowledgeGraph) {
+    init(graph: KnowledgeGraph, displayOptions: KnowledgeGraphDisplayOptions = KnowledgeGraphDisplayOptions()) {
         let roots = graph.topics
         let rootPositions = [
             UnitPoint(x: 0.34, y: 0.44),
@@ -1826,7 +1854,8 @@ private struct KnowledgeGraphLayout {
                 angleRange: Self.angleRange(forRootAt: index),
                 nodes: &nodes,
                 edges: &edges,
-                renderedNodeIDs: &renderedNodeIDs
+                renderedNodeIDs: &renderedNodeIDs,
+                displayOptions: displayOptions
             )
         }
 
@@ -1852,16 +1881,12 @@ private struct KnowledgeGraphLayout {
         angleRange: ClosedRange<Double>,
         nodes: inout [KnowledgeGraphDisplayNode],
         edges: inout [KnowledgeGraphEdge],
-        renderedNodeIDs: inout Set<String>
+        renderedNodeIDs: inout Set<String>,
+        displayOptions: KnowledgeGraphDisplayOptions
     ) {
-        guard !renderedNodeIDs.contains(node.id) else {
-            return
-        }
-        renderedNodeIDs.insert(node.id)
-
         let kind: KnowledgeGraphDisplayNode.Kind = node is TopicNode ? .topic : .concept
         let children = node.children ?? []
-        nodes.append(KnowledgeGraphDisplayNode(
+        let displayNode = KnowledgeGraphDisplayNode(
             id: node.id,
             label: node.label,
             description: node.description,
@@ -1870,7 +1895,16 @@ private struct KnowledgeGraphLayout {
             depth: depth,
             hasChildren: !children.isEmpty,
             position: position
-        ))
+        )
+        let shouldRenderNode = displayOptions.includes(displayNode)
+
+        if shouldRenderNode {
+            guard !renderedNodeIDs.contains(node.id) else {
+                return
+            }
+            renderedNodeIDs.insert(node.id)
+            nodes.append(displayNode)
+        }
 
         guard !children.isEmpty else {
             return
@@ -1888,7 +1922,9 @@ private struct KnowledgeGraphLayout {
                 y: min(max(position.y + sin(angle) * radius, -0.34), 1.34)
             )
 
-            edges.append(KnowledgeGraphEdge(parentID: node.id, childID: child.id))
+            if shouldRenderNode, shouldRender(child, depth: depth + 1, displayOptions: displayOptions) {
+                edges.append(KnowledgeGraphEdge(parentID: node.id, childID: child.id))
+            }
             Self.append(
                 node: child,
                 depth: depth + 1,
@@ -1896,9 +1932,50 @@ private struct KnowledgeGraphLayout {
                 angleRange: (angleRange.lowerBound + step * Double(index) - 62)...(angleRange.lowerBound + step * Double(index) + 62),
                 nodes: &nodes,
                 edges: &edges,
-                renderedNodeIDs: &renderedNodeIDs
+                renderedNodeIDs: &renderedNodeIDs,
+                displayOptions: displayOptions
             )
         }
+    }
+
+    private static func shouldRender(
+        _ node: any Node,
+        depth: Int,
+        displayOptions: KnowledgeGraphDisplayOptions
+    ) -> Bool {
+        displayOptions.includes(KnowledgeGraphDisplayNode(
+            id: node.id,
+            label: node.label,
+            description: node.description,
+            done: node.done,
+            kind: node is TopicNode ? .topic : .concept,
+            depth: depth,
+            hasChildren: !(node.children ?? []).isEmpty,
+            position: UnitPoint(x: 0.5, y: 0.5)
+        ))
+    }
+}
+
+private struct KnowledgeGraphDisplayOptions: Equatable {
+    var showsTopics = true
+    var showsConcepts = true
+    var showsSubtopics = true
+    var onlyIncomplete = false
+
+    func includes(_ node: KnowledgeGraphDisplayNode) -> Bool {
+        if onlyIncomplete, node.done {
+            return false
+        }
+
+        if node.depth == 0 {
+            return showsTopics
+        }
+
+        if node.hasChildren {
+            return showsSubtopics
+        }
+
+        return showsConcepts
     }
 }
 
