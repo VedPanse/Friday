@@ -346,7 +346,7 @@ private struct KnowledgeGraphOpenAIClient {
             throw KnowledgeGraphGenerationError.emptyResponse
         }
 
-        let graph = try Self.decodeGraph(from: text)
+        let graph = try Self.decodeGraph(from: text, rootTopic: topic)
         return KnowledgeGraphGenerationResult(graph: graph, rawResponse: text)
     }
 
@@ -356,15 +356,18 @@ private struct KnowledgeGraphOpenAIClient {
             "max_output_tokens": 4000,
             "instructions": """
             You generate learning knowledge graphs. Return only valid JSON. Do not wrap it in markdown.
+            The app will create exactly one root node using the user's topic text.
+            Your top-level "topics" array must contain subtopics that belong under that root.
+            Do not include the user's topic itself as one of the top-level items unless it is the only object needed to hold children.
             The JSON shape must be:
             {
               "topics": [
                 {
-                  "label": "Topic name",
-                  "description": "One sentence about why this matters.",
+                  "label": "Subtopic name",
+                  "description": "One sentence about why this subtopic matters.",
                   "children": [
                     {
-                      "label": "Subtopic or concept",
+                      "label": "Concept name",
                       "description": "One sentence explanation.",
                       "children": []
                     }
@@ -374,6 +377,7 @@ private struct KnowledgeGraphOpenAIClient {
             }
             Non-leaf nodes represent topics or subtopics and must have children.
             Leaf nodes represent concepts and must use "children": [].
+            The top-level array may have multiple subtopics, but there must not be multiple root topics.
             Keep labels short and descriptions practical.
             """,
             "input": [
@@ -394,7 +398,7 @@ private struct KnowledgeGraphOpenAIClient {
         ]
     }
 
-    private static func decodeGraph(from text: String) throws -> GeneratedKnowledgeGraph {
+    private static func decodeGraph(from text: String, rootTopic: String) throws -> GeneratedKnowledgeGraph {
         let cleanedText = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .replacingOccurrences(of: "^```(?:json)?\\s*", with: "", options: .regularExpression)
@@ -405,15 +409,27 @@ private struct KnowledgeGraphOpenAIClient {
         }
 
         let response = try JSONDecoder.knowledgeGraph.decode(GeneratedKnowledgeGraphResponse.self, from: data)
-        let topics = response.topics
+        let generatedTopics = response.topics
             .map(Self.normalizedNode(_:))
             .filter { !$0.label.isEmpty }
 
-        guard !topics.isEmpty else {
+        guard !generatedTopics.isEmpty else {
             throw KnowledgeGraphGenerationError.invalidResponse
         }
 
-        return GeneratedKnowledgeGraph(topics: topics)
+        let rootDescription = generatedTopics.count == 1 && labelsMatch(generatedTopics[0].label, rootTopic)
+            ? generatedTopics[0].description
+            : "A learning plan for \(rootTopic)."
+        let rootChildren = generatedTopics.count == 1 && labelsMatch(generatedTopics[0].label, rootTopic)
+            ? generatedTopics[0].children
+            : generatedTopics
+        let root = KnowledgeGraphCodableNode(
+            label: rootTopic,
+            description: rootDescription,
+            children: rootChildren
+        )
+
+        return GeneratedKnowledgeGraph(topics: [root])
     }
 
     private static func normalizedNode(_ node: KnowledgeGraphCodableNode) -> KnowledgeGraphCodableNode {
@@ -424,6 +440,11 @@ private struct KnowledgeGraphOpenAIClient {
             done: node.done,
             children: node.children.map(normalizedNode(_:)).filter { !$0.label.isEmpty }
         )
+    }
+
+    private static func labelsMatch(_ lhs: String, _ rhs: String) -> Bool {
+        lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+            .localizedCaseInsensitiveCompare(rhs.trimmingCharacters(in: .whitespacesAndNewlines)) == .orderedSame
     }
 
     private static func extractText(from data: Data) -> String {
@@ -632,7 +653,7 @@ struct KnowledgeGraphPanel: View {
                 .buttonStyle(.plain)
                 .frame(width: 44, height: 44)
                 .contentShape(Circle())
-                .knowledgeGraphGlass(cornerRadius: 19)
+                .knowledgeGraphCircularGlass()
                 .accessibilityLabel("Add topic")
                 .onHover { isHovering in
                     updateAddButtonCursor(isHovering: isHovering)
@@ -1871,6 +1892,17 @@ private extension View {
                 RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
                     .stroke(Color.white.opacity(0.18), lineWidth: 1)
             }
+            .shadow(color: .black.opacity(0.22), radius: 28, x: 0, y: 18)
+    }
+
+    func knowledgeGraphCircularGlass() -> some View {
+        background(.ultraThinMaterial, in: Circle())
+            .background(Color.black.opacity(0.34), in: Circle())
+            .overlay {
+                Circle()
+                    .stroke(Color.white.opacity(0.18), lineWidth: 1)
+            }
+            .clipShape(Circle())
             .shadow(color: .black.opacity(0.22), radius: 28, x: 0, y: 18)
     }
 }
