@@ -1682,6 +1682,7 @@ private final class GraphInteractionNSView: NSView {
 
     private var eventMonitor: Any?
     private var panStartLocation: CGPoint?
+    private var nodeMouseDownID: String?
 
     override var isFlipped: Bool {
         true
@@ -1736,15 +1737,21 @@ private final class GraphInteractionNSView: NSView {
                 return nil
 
             case .leftMouseDown:
-                guard nodeHitTarget(at: location) == nil else {
+                if let nodeID = nodeHitTarget(at: location)?.nodeID {
                     panStartLocation = nil
+                    nodeMouseDownID = nodeID
                     return event
                 }
 
+                nodeMouseDownID = nil
                 panStartLocation = location
                 return nil
 
             case .leftMouseDragged:
+                guard nodeMouseDownID == nil else {
+                    return event
+                }
+
                 guard let panStartLocation else {
                     return event
                 }
@@ -1756,9 +1763,9 @@ private final class GraphInteractionNSView: NSView {
                 return nil
 
             case .leftMouseUp:
-                if let nodeID = nodeHitTarget(at: location)?.nodeID {
+                if nodeMouseDownID != nil {
+                    nodeMouseDownID = nil
                     panStartLocation = nil
-                    onNodeSelected?(nodeID)
                     return event
                 }
 

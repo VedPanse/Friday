@@ -9238,6 +9238,7 @@ private struct FocusCard: View {
     let plan: HomeFocusPlan
     let image: NSImage?
     let isGenerating: Bool
+    @State private var pomodoroSession: FocusPomodoroSession?
 
     var body: some View {
         ZStack {
@@ -9288,10 +9289,26 @@ private struct FocusCard: View {
                                 .stroke(Color(red: 0.25, green: 0.24, blue: 0.31).opacity(0.92), lineWidth: 30)
                         }
 
-                    Image(systemName: symbolName)
-                        .font(.system(size: 74, weight: .semibold))
-                        .symbolRenderingMode(.hierarchical)
-                        .foregroundStyle(.white.opacity(0.92))
+                    TimelineView(.periodic(from: Date(), by: 1)) { timeline in
+                        ZStack {
+                            if let session = activeSession(now: timeline.date) {
+                                Circle()
+                                    .trim(from: 0, to: session.progress(now: timeline.date))
+                                    .stroke(Color.white.opacity(0.92), style: StrokeStyle(lineWidth: 8, lineCap: .round))
+                                    .frame(width: 162, height: 162)
+                                    .rotationEffect(.degrees(-90))
+
+                                Text(session.remainingText(now: timeline.date))
+                                    .font(.title.weight(.bold))
+                                    .foregroundStyle(.white)
+                            } else {
+                                Image(systemName: symbolName)
+                                    .font(.system(size: 74, weight: .semibold))
+                                    .symbolRenderingMode(.hierarchical)
+                                    .foregroundStyle(.white.opacity(0.92))
+                            }
+                        }
+                    }
                 }
 
                 Text(plan.reason)
@@ -9301,12 +9318,12 @@ private struct FocusCard: View {
                     .lineLimit(2)
                     .frame(maxWidth: 430)
 
-                Button(action: {}) {
+                Button(action: togglePomodoroSession) {
                     HStack(spacing: 12) {
-                        Text(plan.actionTitle)
+                        Text(isPomodoroRunning ? "Stop" : plan.actionTitle)
                             .font(.headline.weight(.bold))
 
-                        Image(systemName: "play.fill")
+                        Image(systemName: isPomodoroRunning ? "stop.fill" : "play.fill")
                             .font(.headline.weight(.bold))
                     }
                     .foregroundStyle(.white)
@@ -9333,7 +9350,36 @@ private struct FocusCard: View {
             return "\(startsAt.formatted(date: .omitted, time: .shortened)) - starts in \(minutes) min"
         }
 
-        return "\(plan.durationMinutes) min focus block - \(plan.source.rawValue)"
+        if let session = activeSession(now: now) {
+            return "Pomodoro running - \(session.remainingText(now: now)) left"
+        }
+
+        return "\(plan.durationMinutes) min focus block"
+    }
+
+    private var isPomodoroRunning: Bool {
+        activeSession(now: Date()) != nil
+    }
+
+    private func activeSession(now: Date) -> FocusPomodoroSession? {
+        guard let pomodoroSession, pomodoroSession.endDate > now else {
+            return nil
+        }
+
+        return pomodoroSession
+    }
+
+    private func togglePomodoroSession() {
+        if isPomodoroRunning {
+            pomodoroSession = nil
+            return
+        }
+
+        pomodoroSession = FocusPomodoroSession(
+            title: plan.title,
+            durationMinutes: max(1, plan.durationMinutes),
+            startedAt: Date()
+        )
     }
 
     private var symbolName: String {
@@ -9351,6 +9397,29 @@ private struct FocusCard: View {
             return "checkmark.circle.fill"
         }
         return "sun.max.fill"
+    }
+}
+
+private struct FocusPomodoroSession: Equatable {
+    let title: String
+    let durationMinutes: Int
+    let startedAt: Date
+
+    var endDate: Date {
+        startedAt.addingTimeInterval(TimeInterval(durationMinutes * 60))
+    }
+
+    func progress(now: Date) -> CGFloat {
+        let total = max(endDate.timeIntervalSince(startedAt), 1)
+        let elapsed = min(max(now.timeIntervalSince(startedAt), 0), total)
+        return CGFloat(elapsed / total)
+    }
+
+    func remainingText(now: Date) -> String {
+        let remainingSeconds = max(0, Int(endDate.timeIntervalSince(now).rounded(.up)))
+        let minutes = remainingSeconds / 60
+        let seconds = remainingSeconds % 60
+        return String(format: "%02d:%02d", minutes, seconds)
     }
 }
 
