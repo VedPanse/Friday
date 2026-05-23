@@ -551,6 +551,9 @@ struct KnowledgeGraphPanel: View {
                     setDone: { isDone in
                         graph.setDone(isDone, forNodeID: selectedNode.id)
                     },
+                    selectNode: { nodeID in
+                        selectedNodeID = nodeID
+                    },
                     close: {
                         selectedNodeID = nil
                     }
@@ -1170,6 +1173,7 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
     let node: KnowledgeGraphDisplayNode
     let relatedNodes: [KnowledgeGraphRelatedNode]
     let setDone: (Bool) -> Void
+    let selectNode: (String) -> Void
     let close: () -> Void
 
     @State private var isCloseHovered = false
@@ -1186,6 +1190,10 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
 
     private var nodeColor: Color {
         node.graphColor
+    }
+
+    private var childNodes: [KnowledgeGraphRelatedNode] {
+        relatedNodes.filter { $0.role == "Child" }
     }
 
     var body: some View {
@@ -1223,21 +1231,19 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
                 .foregroundStyle(.secondary)
 
 
-            if node.kind == .topic {
+            if !childNodes.isEmpty {
                 Rectangle()
                     .fill(Color.white.opacity(0.16))
                     .frame(height: 1)
                     .padding(.vertical, 2)
 
-                ForEach(relatedNodes) { relatedNode in
-                    HStack {
-                        if (relatedNode.node.done) {
-                            Image(systemName: "checkmark.circle")
-                                .foregroundColor(.green)
+                ForEach(childNodes) { relatedNode in
+                    KnowledgeGraphRelatedNodeRow(
+                        relatedNode: relatedNode,
+                        select: {
+                            selectNode(relatedNode.node.id)
                         }
-                        Text(relatedNode.node.label)
-                            .foregroundStyle(.secondary)
-                    }
+                    )
                 }
             }
         }
@@ -1263,6 +1269,55 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
         guard isCheckboxCursorPushed else { return }
         NSCursor.pop()
         isCheckboxCursorPushed = false
+    }
+}
+
+private struct KnowledgeGraphRelatedNodeRow: View {
+    let relatedNode: KnowledgeGraphRelatedNode
+    let select: () -> Void
+
+    @State private var isHovered = false
+    @State private var isCursorPushed = false
+
+    var body: some View {
+        HStack(spacing: 8) {
+            if relatedNode.node.done {
+                Image(systemName: "checkmark.circle")
+                    .foregroundColor(.green)
+            }
+
+            Text(relatedNode.node.label)
+                .foregroundStyle(isHovered ? .white : .secondary)
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
+
+            Spacer(minLength: 0)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: select)
+        .onHover { isHovering in
+            isHovered = isHovering
+            updateCursor(isHovering: isHovering)
+        }
+        .onDisappear {
+            restoreCursorIfNeeded()
+        }
+    }
+
+    private func updateCursor(isHovering: Bool) {
+        if isHovering {
+            guard !isCursorPushed else { return }
+            NSCursor.pointingHand.push()
+            isCursorPushed = true
+        } else {
+            restoreCursorIfNeeded()
+        }
+    }
+
+    private func restoreCursorIfNeeded() {
+        guard isCursorPushed else { return }
+        NSCursor.pop()
+        isCursorPushed = false
     }
 }
 
