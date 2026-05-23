@@ -510,6 +510,7 @@ struct KnowledgeGraphPanel: View {
     @State private var requestedDepth = KnowledgeGraphUnderstandingDepth.medium
     @State private var generationError: String?
     @State private var isGenerating = false
+    @State private var isAddButtonCursorPushed = false
 
     private var layout: KnowledgeGraphLayout {
         KnowledgeGraphLayout(graph: graph)
@@ -550,7 +551,17 @@ struct KnowledgeGraphPanel: View {
             KnowledgeGraphCanvas(
                 nodes: layout.nodes,
                 edges: layout.edges,
-                selectedNodeID: $selectedNodeID
+                selectedNodeID: $selectedNodeID,
+                passthroughHitRegions: { size in
+                    [
+                        CGRect(
+                            x: size.width - 88,
+                            y: 0,
+                            width: 88,
+                            height: 88
+                        ),
+                    ]
+                }
             )
 
             if layout.nodes.isEmpty {
@@ -619,12 +630,36 @@ struct KnowledgeGraphPanel: View {
                         .contentShape(Circle())
                 }
                 .buttonStyle(.plain)
+                .frame(width: 44, height: 44)
+                .contentShape(Circle())
                 .knowledgeGraphGlass(cornerRadius: 19)
                 .accessibilityLabel("Add topic")
+                .onHover { isHovering in
+                    updateAddButtonCursor(isHovering: isHovering)
+                }
+                .onDisappear {
+                    restoreAddButtonCursorIfNeeded()
+                }
             }
 
             Spacer()
         }
+    }
+
+    private func updateAddButtonCursor(isHovering: Bool) {
+        if isHovering {
+            guard !isAddButtonCursorPushed else { return }
+            NSCursor.pointingHand.push()
+            isAddButtonCursorPushed = true
+        } else {
+            restoreAddButtonCursorIfNeeded()
+        }
+    }
+
+    private func restoreAddButtonCursorIfNeeded() {
+        guard isAddButtonCursorPushed else { return }
+        NSCursor.pop()
+        isAddButtonCursorPushed = false
     }
 
     private var generateGraphDialog: some View {
@@ -761,6 +796,7 @@ private struct KnowledgeGraphCanvas: View {
     let nodes: [KnowledgeGraphDisplayNode]
     let edges: [KnowledgeGraphEdge]
     @Binding var selectedNodeID: String?
+    let passthroughHitRegions: (CGSize) -> [CGRect]
 
     private let graphPositionMin: CGFloat = -0.34
     private let graphPositionMax: CGFloat = 1.34
@@ -781,6 +817,7 @@ private struct KnowledgeGraphCanvas: View {
             ZStack {
                 KnowledgeGraphInteractionView(
                     nodeHitRegions: nodeHitRegions(in: geometry.size),
+                    passthroughHitRegions: passthroughHitRegions(geometry.size),
                     onScroll: { delta, location in
                         zoom(by: delta, around: location, in: geometry.size)
                     },
@@ -1335,6 +1372,7 @@ private struct KnowledgeGraphNodeView: View {
 
 private struct KnowledgeGraphInteractionView: NSViewRepresentable {
     let nodeHitRegions: [CGRect]
+    let passthroughHitRegions: [CGRect]
     let onScroll: (CGFloat, CGPoint) -> Void
     let onPanChanged: (CGSize) -> Void
     let onPanEnded: () -> Void
@@ -1344,6 +1382,7 @@ private struct KnowledgeGraphInteractionView: NSViewRepresentable {
     func makeNSView(context: Context) -> GraphInteractionNSView {
         let view = GraphInteractionNSView()
         view.nodeHitRegions = nodeHitRegions
+        view.passthroughHitRegions = passthroughHitRegions
         view.onScroll = onScroll
         view.onPanChanged = onPanChanged
         view.onPanEnded = onPanEnded
@@ -1354,6 +1393,7 @@ private struct KnowledgeGraphInteractionView: NSViewRepresentable {
 
     func updateNSView(_ nsView: GraphInteractionNSView, context: Context) {
         nsView.nodeHitRegions = nodeHitRegions
+        nsView.passthroughHitRegions = passthroughHitRegions
         nsView.onScroll = onScroll
         nsView.onPanChanged = onPanChanged
         nsView.onPanEnded = onPanEnded
@@ -1364,6 +1404,7 @@ private struct KnowledgeGraphInteractionView: NSViewRepresentable {
 
 private final class GraphInteractionNSView: NSView {
     var nodeHitRegions: [CGRect] = []
+    var passthroughHitRegions: [CGRect] = []
     var onScroll: ((CGFloat, CGPoint) -> Void)?
     var onPanChanged: ((CGSize) -> Void)?
     var onPanEnded: (() -> Void)?
@@ -1412,6 +1453,11 @@ private final class GraphInteractionNSView: NSView {
 
             let location = convert(event.locationInWindow, from: nil)
             guard bounds.contains(location) else {
+                return event
+            }
+
+            guard !isPassthroughHit(at: location) else {
+                panStartLocation = nil
                 return event
             }
 
@@ -1464,6 +1510,10 @@ private final class GraphInteractionNSView: NSView {
 
     private func isNodeHit(at location: CGPoint) -> Bool {
         nodeHitRegions.contains { $0.contains(location) }
+    }
+
+    private func isPassthroughHit(at location: CGPoint) -> Bool {
+        passthroughHitRegions.contains { $0.contains(location) }
     }
 
     private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
