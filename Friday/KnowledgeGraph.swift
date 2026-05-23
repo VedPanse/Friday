@@ -8,6 +8,7 @@
 import Combine
 import Foundation
 import AppKit
+import Security
 import SwiftUI
 
 protocol Node: AnyObject, Identifiable {
@@ -20,12 +21,16 @@ protocol Node: AnyObject, Identifiable {
 }
 
 final class TopicNode: Node {
-    let id = UUID().uuidString
+    let id: String
     var label = ""
     var path: URL?
     var done = false
     var description = ""
     var children: [any Node]? = []
+
+    init(id: String = UUID().uuidString) {
+        self.id = id
+    }
 
     convenience init(label: String, description: String = "", children: [any Node] = []) {
         self.init()
@@ -44,7 +49,7 @@ final class TopicNode: Node {
 }
 
 final class ConceptNode: Node {
-    let id = UUID().uuidString
+    let id: String
     var label = ""
     var path: URL?
     var done = false
@@ -55,6 +60,10 @@ final class ConceptNode: Node {
     }
     let createdAt = Date()
 
+    init(id: String = UUID().uuidString) {
+        self.id = id
+    }
+
     convenience init(label: String, description: String = "") {
         self.init()
         self.label = label
@@ -64,69 +73,60 @@ final class ConceptNode: Node {
 
 final class KnowledgeGraph: ObservableObject {
     @Published var topics: [TopicNode] = []
+    @Published var generatedTopic: String?
+    @Published var generatedDepth: KnowledgeGraphUnderstandingDepth?
 
-    static var sample: KnowledgeGraph {
-        let graph = KnowledgeGraph()
-        let capTheorem = ConceptNode(
-            label: "CAP theorem",
-            description: "A distributed systems tradeoff between consistency, availability, and partition tolerance."
-        )
-        capTheorem.done = true
+    private let store: KnowledgeGraphStore
+    private var rawOpenAIResponse: String?
 
-        let scalability = TopicNode(label: "Scalability", description: "Techniques for keeping systems reliable and responsive as demand grows.", children: [
-            TopicNode(label: "Distributed Systems", description: "Architectures that coordinate work across multiple networked machines.", children: [
-                capTheorem,
-                ConceptNode(label: "Consistent hashing", description: "A key distribution strategy that reduces remapping when nodes join or leave."),
-                ConceptNode(label: "Quorum reads", description: "A replication read strategy requiring responses from enough replicas to trust a value."),
-                ConceptNode(label: "Leader election", description: "A coordination process for choosing one node to make authoritative decisions."),
-            ]),
-            TopicNode(label: "Databases", description: "Storage systems for organizing, querying, and protecting application data.", children: [
-                ConceptNode(label: "Sharding", description: "Splitting data across partitions so storage and traffic can scale horizontally."),
-                ConceptNode(label: "Replication", description: "Keeping copies of data on multiple machines for durability and availability."),
-                ConceptNode(label: "Indexing", description: "Maintaining lookup structures that make reads faster for selected access patterns."),
-            ]),
-            ConceptNode(label: "Load balancing", description: "Routing work across resources to avoid hotspots and improve availability."),
-            ConceptNode(label: "Backpressure", description: "Signaling overload upstream so producers slow down before consumers fail."),
-        ])
+    convenience init() {
+        self.init(store: KnowledgeGraphStore())
+    }
 
-        let ai = TopicNode(label: "AI", description: "Methods for building systems that perceive, reason, generate, or act from data.", children: [
-            TopicNode(label: "Machine Learning", description: "Algorithms that improve behavior by fitting patterns from examples.", children: [
-                ConceptNode(label: "Gradient descent", description: "An optimization method that updates parameters in the direction of lower loss."),
-                ConceptNode(label: "Overfitting", description: "When a model memorizes training data patterns that do not generalize well."),
-                ConceptNode(label: "Embeddings", description: "Vector representations that encode semantic similarity for search and modeling."),
-            ]),
-            TopicNode(label: "Agents", description: "AI systems that choose actions, use tools, and maintain context toward a goal.", children: [
-                ConceptNode(label: "Planning", description: "Breaking a goal into ordered steps and adjusting as new information arrives."),
-                ConceptNode(label: "Tool use", description: "Calling external capabilities such as search, code execution, or APIs to complete work."),
-                ConceptNode(label: "Memory", description: "Persisting useful context so future interactions can build on past information."),
-                ConceptNode(label: "RAG", description: "Retrieval-augmented generation that grounds model responses in fetched source material."),
-            ]),
-            ConceptNode(label: "Transformers", description: "Neural network architectures built around attention over token sequences."),
-        ])
+    private init(store: KnowledgeGraphStore) {
+        self.store = store
+        if let snapshot = store.load() {
+            topics = snapshot.topics.map(Self.topicNode(from:))
+            generatedTopic = snapshot.topic
+            generatedDepth = snapshot.depth.flatMap(KnowledgeGraphUnderstandingDepth.init(rawValue:))
+            rawOpenAIResponse = snapshot.rawOpenAIResponse
+        }
+    }
 
-        let systemDesign = TopicNode(label: "System Design", description: "Designing software architecture around reliability, scale, cost, and operations.", children: [
-            ConceptNode(label: "Caching", description: "Storing expensive results closer to callers to reduce latency and load."),
-            ConceptNode(label: "Queues", description: "Decoupling producers and consumers so work can be processed asynchronously."),
-            ConceptNode(label: "Observability", description: "Using logs, metrics, and traces to understand system behavior in production."),
-            ConceptNode(label: "Rate limiting", description: "Controlling request volume to protect services and enforce fair usage."),
-        ])
-
-        graph.topics = [scalability, ai, systemDesign]
-        return graph
+    func replace(with generatedGraph: GeneratedKnowledgeGraph, topic: String, depth: KnowledgeGraphUnderstandingDepth, rawResponse: String) {
+        topics = generatedGraph.topics.map(Self.topicNode(from:))
+        generatedTopic = topic
+        generatedDepth = depth
+        self.rawOpenAIResponse = rawResponse
+        save(rawResponse: rawResponse)
     }
 
     func addTopic(_ topic: TopicNode) {
         topics.append(topic)
+        save(rawResponse: nil)
     }
 
     func setDone(_ isDone: Bool, forNodeID nodeID: String) {
         guard let node = findNode(withID: nodeID) else { return }
         objectWillChange.send()
         setDone(isDone, for: node)
+        save(rawResponse: nil)
     }
 
-    func save() {
-        // Persistence will be added once Friday starts learning graph nodes from user material.
+    func save(rawResponse: String?) {
+        if let rawResponse {
+            self.rawOpenAIResponse = rawResponse
+        }
+
+        let snapshot = KnowledgeGraphSnapshot(
+            version: 1,
+            topic: generatedTopic,
+            depth: generatedDepth?.rawValue,
+            generatedAt: Date(),
+            rawOpenAIResponse: self.rawOpenAIResponse,
+            topics: topics.map(Self.codableNode(from:))
+        )
+        store.save(snapshot)
     }
 
     private func findNode(withID nodeID: String) -> (any Node)? {
@@ -164,11 +164,352 @@ final class KnowledgeGraph: ObservableObject {
             setDone(isDone, for: child)
         }
     }
+
+    private static func topicNode(from node: KnowledgeGraphCodableNode) -> TopicNode {
+        let topic = TopicNode(id: node.id)
+        topic.label = node.label
+        topic.description = node.description
+        topic.done = node.done
+        topic.children = node.children.map { child in
+            if child.children.isEmpty {
+                let concept = ConceptNode(id: child.id)
+                concept.label = child.label
+                concept.description = child.description
+                concept.done = child.done
+                return concept
+            }
+
+            return topicNode(from: child)
+        }
+        return topic
+    }
+
+    private static func codableNode(from node: any Node) -> KnowledgeGraphCodableNode {
+        KnowledgeGraphCodableNode(
+            id: node.id,
+            label: node.label,
+            description: node.description,
+            done: node.done,
+            children: (node.children ?? []).map(Self.codableNode(from:))
+        )
+    }
+}
+
+enum KnowledgeGraphUnderstandingDepth: String, CaseIterable, Codable, Identifiable {
+    case surface
+    case medium
+    case deep
+
+    var id: String { rawValue }
+
+    var title: String {
+        switch self {
+        case .surface:
+            return "Surface level"
+        case .medium:
+            return "Medium"
+        case .deep:
+            return "Deep"
+        }
+    }
+
+    var generationGuidance: String {
+        switch self {
+        case .surface:
+            return "Create 3 to 4 top-level topics. Each topic should have 3 to 5 practical leaf concepts. Keep the graph compact."
+        case .medium:
+            return "Create 4 to 6 top-level topics. Include useful subtopics where needed, with 4 to 7 leaf concepts per major area."
+        case .deep:
+            return "Create 6 to 8 top-level topics. Include multiple layers of subtopics and detailed prerequisite and advanced concepts."
+        }
+    }
+}
+
+struct GeneratedKnowledgeGraph {
+    let topics: [KnowledgeGraphCodableNode]
+}
+
+private struct KnowledgeGraphGenerationResult {
+    let graph: GeneratedKnowledgeGraph
+    let rawResponse: String
+}
+
+private struct KnowledgeGraphSnapshot: Codable {
+    let version: Int
+    let topic: String?
+    let depth: String?
+    let generatedAt: Date
+    let rawOpenAIResponse: String?
+    let topics: [KnowledgeGraphCodableNode]
+}
+
+struct KnowledgeGraphCodableNode: Codable, Equatable {
+    var id = UUID().uuidString
+    var label: String
+    var description: String
+    var done = false
+    var children: [KnowledgeGraphCodableNode] = []
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case label
+        case description
+        case done
+        case children
+    }
+
+    init(
+        id: String = UUID().uuidString,
+        label: String,
+        description: String,
+        done: Bool = false,
+        children: [KnowledgeGraphCodableNode] = []
+    ) {
+        self.id = id
+        self.label = label
+        self.description = description
+        self.done = done
+        self.children = children
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decodeIfPresent(String.self, forKey: .id) ?? UUID().uuidString
+        label = try container.decode(String.self, forKey: .label)
+        description = try container.decodeIfPresent(String.self, forKey: .description) ?? ""
+        done = try container.decodeIfPresent(Bool.self, forKey: .done) ?? false
+        children = try container.decodeIfPresent([KnowledgeGraphCodableNode].self, forKey: .children) ?? []
+    }
+}
+
+private struct KnowledgeGraphStore {
+    private let fileURL: URL
+
+    init(fileManager: FileManager = .default) {
+        let baseURL = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)
+            .first?
+            .appending(path: "Friday", directoryHint: .isDirectory)
+            ?? URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "Friday", directoryHint: .isDirectory)
+
+        fileURL = baseURL.appending(path: "knowledge-graph.json", directoryHint: .notDirectory)
+    }
+
+    func load() -> KnowledgeGraphSnapshot? {
+        guard
+            let data = try? Data(contentsOf: fileURL),
+            let snapshot = try? JSONDecoder.knowledgeGraph.decode(KnowledgeGraphSnapshot.self, from: data)
+        else {
+            return nil
+        }
+
+        return snapshot
+    }
+
+    func save(_ snapshot: KnowledgeGraphSnapshot) {
+        do {
+            try FileManager.default.createDirectory(
+                at: fileURL.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            let data = try JSONEncoder.knowledgeGraph.encode(snapshot)
+            try data.write(to: fileURL, options: [.atomic])
+        } catch {
+            NSLog("Friday failed to save knowledge graph: \(error.localizedDescription)")
+        }
+    }
+}
+
+private struct KnowledgeGraphOpenAIClient {
+    func generateGraph(
+        topic: String,
+        depth: KnowledgeGraphUnderstandingDepth
+    ) async throws -> KnowledgeGraphGenerationResult {
+        let apiKey = (KnowledgeGraphKeychain.openAIAPIKey ?? ProcessInfo.processInfo.environment["OPENAI_API_KEY"] ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else {
+            throw KnowledgeGraphGenerationError.missingAPIKey
+        }
+
+        var request = URLRequest(url: URL(string: "https://api.openai.com/v1/responses")!)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestBody(topic: topic, depth: depth))
+
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+            throw KnowledgeGraphGenerationError.openAIRequestFailed
+        }
+
+        let text = Self.extractText(from: data)
+        guard !text.isEmpty else {
+            throw KnowledgeGraphGenerationError.emptyResponse
+        }
+
+        let graph = try Self.decodeGraph(from: text)
+        return KnowledgeGraphGenerationResult(graph: graph, rawResponse: text)
+    }
+
+    private func requestBody(topic: String, depth: KnowledgeGraphUnderstandingDepth) -> [String: Any] {
+        [
+            "model": "gpt-5.4-mini",
+            "max_output_tokens": 4000,
+            "instructions": """
+            You generate learning knowledge graphs. Return only valid JSON. Do not wrap it in markdown.
+            The JSON shape must be:
+            {
+              "topics": [
+                {
+                  "label": "Topic name",
+                  "description": "One sentence about why this matters.",
+                  "children": [
+                    {
+                      "label": "Subtopic or concept",
+                      "description": "One sentence explanation.",
+                      "children": []
+                    }
+                  ]
+                }
+              ]
+            }
+            Non-leaf nodes represent topics or subtopics and must have children.
+            Leaf nodes represent concepts and must use "children": [].
+            Keep labels short and descriptions practical.
+            """,
+            "input": [
+                [
+                    "role": "user",
+                    "content": [
+                        [
+                            "type": "input_text",
+                            "text": """
+                            Topic to learn: \(topic)
+                            Desired understanding: \(depth.title)
+                            Graph detail: \(depth.generationGuidance)
+                            """,
+                        ],
+                    ],
+                ] as [String: Any],
+            ],
+        ]
+    }
+
+    private static func decodeGraph(from text: String) throws -> GeneratedKnowledgeGraph {
+        let cleanedText = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "^```(?:json)?\\s*", with: "", options: .regularExpression)
+            .replacingOccurrences(of: "\\s*```$", with: "", options: .regularExpression)
+
+        guard let data = cleanedText.data(using: .utf8) else {
+            throw KnowledgeGraphGenerationError.invalidResponse
+        }
+
+        let response = try JSONDecoder.knowledgeGraph.decode(GeneratedKnowledgeGraphResponse.self, from: data)
+        let topics = response.topics
+            .map(Self.normalizedNode(_:))
+            .filter { !$0.label.isEmpty }
+
+        guard !topics.isEmpty else {
+            throw KnowledgeGraphGenerationError.invalidResponse
+        }
+
+        return GeneratedKnowledgeGraph(topics: topics)
+    }
+
+    private static func normalizedNode(_ node: KnowledgeGraphCodableNode) -> KnowledgeGraphCodableNode {
+        KnowledgeGraphCodableNode(
+            id: node.id,
+            label: node.label.trimmingCharacters(in: .whitespacesAndNewlines),
+            description: node.description.trimmingCharacters(in: .whitespacesAndNewlines),
+            done: node.done,
+            children: node.children.map(normalizedNode(_:)).filter { !$0.label.isEmpty }
+        )
+    }
+
+    private static func extractText(from data: Data) -> String {
+        guard let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return ""
+        }
+
+        if let outputText = object["output_text"] as? String {
+            return outputText
+        }
+
+        guard let output = object["output"] as? [[String: Any]] else {
+            return ""
+        }
+
+        return output
+            .compactMap { item -> String? in
+                guard let content = item["content"] as? [[String: Any]] else { return nil }
+                return content.compactMap { $0["text"] as? String }.joined(separator: "\n")
+            }
+            .joined(separator: "\n")
+    }
+}
+
+private struct GeneratedKnowledgeGraphResponse: Decodable {
+    let topics: [KnowledgeGraphCodableNode]
+}
+
+private enum KnowledgeGraphGenerationError: LocalizedError {
+    case missingAPIKey
+    case openAIRequestFailed
+    case emptyResponse
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .missingAPIKey:
+            return "Add an OpenAI API key in Settings before generating a learning graph."
+        case .openAIRequestFailed:
+            return "OpenAI could not generate the graph right now. Check the API key and network connection."
+        case .emptyResponse:
+            return "OpenAI returned an empty graph response."
+        case .invalidResponse:
+            return "OpenAI returned a graph format Friday could not read."
+        }
+    }
+}
+
+private enum KnowledgeGraphKeychain {
+    private static let service = "com.vedpanse.Friday"
+    private static let openAIAccount = "openai-api-key"
+
+    static var openAIAPIKey: String? {
+        read(account: openAIAccount)
+    }
+
+    private static func read(account: String) -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account,
+            kSecReturnData as String: true,
+            kSecMatchLimit as String: kSecMatchLimitOne,
+        ]
+
+        var item: CFTypeRef?
+        guard SecItemCopyMatching(query as CFDictionary, &item) == errSecSuccess else {
+            return nil
+        }
+
+        guard let data = item as? Data else {
+            return nil
+        }
+
+        return String(data: data, encoding: .utf8)
+    }
 }
 
 struct KnowledgeGraphPanel: View {
-    @StateObject private var graph = KnowledgeGraph.sample
+    @StateObject private var graph = KnowledgeGraph()
     @State private var selectedNodeID: String?
+    @State private var isShowingGenerateDialog = false
+    @State private var requestedTopic = ""
+    @State private var requestedDepth = KnowledgeGraphUnderstandingDepth.medium
+    @State private var generationError: String?
+    @State private var isGenerating = false
 
     private var layout: KnowledgeGraphLayout {
         KnowledgeGraphLayout(graph: graph)
@@ -196,6 +537,9 @@ struct KnowledgeGraphPanel: View {
         }
         .animation(.spring(response: 0.36, dampingFraction: 0.86), value: selectedNodeID)
         .background(WindowBackgroundDraggingOverride(isMovableByWindowBackground: false))
+        .sheet(isPresented: $isShowingGenerateDialog) {
+            generateGraphDialog
+        }
     }
 
     private func graphIsland(layout: KnowledgeGraphLayout) -> some View {
@@ -209,7 +553,27 @@ struct KnowledgeGraphPanel: View {
                 selectedNodeID: $selectedNodeID
             )
 
+            if layout.nodes.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "point.3.connected.trianglepath.dotted")
+                        .font(.system(size: 34, weight: .semibold))
+                        .foregroundStyle(.white.opacity(0.7))
+
+                    Text("Create a learning graph")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text("Use the plus button to generate topics, subtopics, and concepts.")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.52))
+                }
+                .allowsHitTesting(false)
+            }
+
             graphHeader
+                .padding(22)
+
+            addTopicButton
                 .padding(22)
         }
         .frame(width: 980, height: 680)
@@ -235,6 +599,132 @@ struct KnowledgeGraphPanel: View {
             Spacer()
         }
         .allowsHitTesting(false)
+    }
+
+    private var addTopicButton: some View {
+        VStack {
+            HStack {
+                Spacer()
+
+                Button {
+                    generationError = nil
+                    requestedTopic = graph.generatedTopic ?? ""
+                    requestedDepth = graph.generatedDepth ?? .medium
+                    isShowingGenerateDialog = true
+                } label: {
+                    Image(systemName: "plus")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 38, height: 38)
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .knowledgeGraphGlass(cornerRadius: 19)
+                .accessibilityLabel("Add topic")
+            }
+
+            Spacer()
+        }
+    }
+
+    private var generateGraphDialog: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            HStack {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Generate Learning Graph")
+                        .font(.headline.weight(.semibold))
+                        .foregroundStyle(.white)
+
+                    Text("Friday will replace the current graph with an OpenAI-generated plan.")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.white.opacity(0.58))
+                }
+
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Topic")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+
+                TextField("What do you want to learn?", text: $requestedTopic)
+                    .textFieldStyle(.plain)
+                    .padding(10)
+                    .background(Color.white.opacity(0.08), in: .rect(cornerRadius: 10, style: .continuous))
+                    .foregroundStyle(.white)
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Understanding")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.72))
+
+                Picker("Understanding", selection: $requestedDepth) {
+                    ForEach(KnowledgeGraphUnderstandingDepth.allCases) { depth in
+                        Text(depth.title).tag(depth)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+            }
+
+            if let generationError {
+                Text(generationError)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.red.opacity(0.92))
+            }
+
+            HStack {
+                Button("Cancel") {
+                    isShowingGenerateDialog = false
+                }
+                .disabled(isGenerating)
+
+                Spacer()
+
+                Button {
+                    generateGraph()
+                } label: {
+                    if isGenerating {
+                        ProgressView()
+                            .controlSize(.small)
+                    } else {
+                        Text("Generate")
+                    }
+                }
+                .disabled(isGenerating || requestedTopic.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(22)
+        .frame(width: 420)
+        .background(Color(red: 0.08, green: 0.08, blue: 0.09))
+    }
+
+    private func generateGraph() {
+        let topic = requestedTopic.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !topic.isEmpty else { return }
+
+        isGenerating = true
+        generationError = nil
+
+        Task {
+            do {
+                let result = try await KnowledgeGraphOpenAIClient().generateGraph(topic: topic, depth: requestedDepth)
+                await MainActor.run {
+                    graph.replace(with: result.graph, topic: topic, depth: requestedDepth, rawResponse: result.rawResponse)
+                    selectedNodeID = nil
+                    isGenerating = false
+                    isShowingGenerateDialog = false
+                }
+            } catch {
+                await MainActor.run {
+                    generationError = error.localizedDescription
+                    isGenerating = false
+                }
+            }
+        }
     }
 
     private func relatedNodes(
@@ -624,6 +1114,7 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
     let close: () -> Void
 
     @State private var isCloseHovered = false
+    @State private var isCheckboxCursorPushed = false
 
     private var typeLabel: String {
         switch node.kind {
@@ -656,7 +1147,7 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
                         if node.done {
                             Image(systemName: "checkmark")
                                 .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(.white)
+                                .foregroundStyle(.black)
                         }
                     }
                     .frame(width: 24, height: 24)
@@ -664,6 +1155,9 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(node.done ? "Mark not done" : "Mark done")
+                .onHover { isHovering in
+                    updateCheckboxCursor(isHovering: isHovering)
+                }
                 Text(node.label)
             }
             Text(node.description)
@@ -686,6 +1180,25 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
         .padding(18)
         .frame(width: 260, height: 680)
         .knowledgeGraphGlass(cornerRadius: 26)
+        .onDisappear {
+            restoreCheckboxCursorIfNeeded()
+        }
+    }
+
+    private func updateCheckboxCursor(isHovering: Bool) {
+        if isHovering {
+            guard !isCheckboxCursorPushed else { return }
+            NSCursor.pointingHand.push()
+            isCheckboxCursorPushed = true
+        } else {
+            restoreCheckboxCursorIfNeeded()
+        }
+    }
+
+    private func restoreCheckboxCursorIfNeeded() {
+        guard isCheckboxCursorPushed else { return }
+        NSCursor.pop()
+        isCheckboxCursorPushed = false
     }
 }
 
@@ -1268,6 +1781,23 @@ private enum KnowledgeGraphColor {
 
     static func middleColor(forDepth depth: Int) -> Color {
         middlePalette[(max(depth, 1) - 1) % middlePalette.count]
+    }
+}
+
+private extension JSONDecoder {
+    static var knowledgeGraph: JSONDecoder {
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return decoder
+    }
+}
+
+private extension JSONEncoder {
+    static var knowledgeGraph: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
     }
 }
 
