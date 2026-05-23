@@ -621,6 +621,7 @@ struct KnowledgeGraphPanel: View {
                         selectedNodeID = nil
                     }
                 )
+                .id(selectedNode.id)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
