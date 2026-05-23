@@ -93,6 +93,7 @@ private final class EventKitCalendarReader: CalendarReading {
 
     func todaySummary() async throws -> CalendarSummary {
         try await requestCalendarAccessIfNeeded()
+        eventStore.refreshSourcesIfNecessary()
 
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: Date())
@@ -100,10 +101,11 @@ private final class EventKitCalendarReader: CalendarReading {
             throw AppDataError.invalidDateRange
         }
 
+        let allCalendars = eventStore.fridayAllEventCalendars()
         let predicate = eventStore.predicateForEvents(
             withStart: Date(),
             end: endOfDay,
-            calendars: nil
+            calendars: allCalendars.isEmpty ? nil : allCalendars
         )
 
         let events = eventStore.events(matching: predicate)
@@ -140,6 +142,20 @@ private final class EventKitCalendarReader: CalendarReading {
                     continuation.resume(returning: isGranted)
                 }
             }
+        }
+    }
+}
+
+nonisolated private extension EKEventStore {
+    func fridayAllEventCalendars() -> [EKCalendar] {
+        let directCalendars = calendars(for: .event)
+        let sourceCalendars = sources.flatMap { source in
+            Array(source.calendars(for: .event))
+        }
+
+        var seenCalendarIDs = Set<String>()
+        return (directCalendars + sourceCalendars).filter { calendar in
+            seenCalendarIDs.insert(calendar.calendarIdentifier).inserted
         }
     }
 }

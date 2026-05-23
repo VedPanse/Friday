@@ -4747,6 +4747,7 @@ private final class HomeEventKitCalendarReader: HomeCalendarReading {
 
     func todaySummary() async throws -> HomeCalendarSummary {
         try await requestCalendarAccessIfNeeded()
+        eventStore.refreshSourcesIfNecessary()
 
         let calendar = Calendar.current
         let startOfDay = calendar.startOfDay(for: Date())
@@ -4757,15 +4758,16 @@ private final class HomeEventKitCalendarReader: HomeCalendarReading {
             throw HomePanelDataError.invalidDateRange
         }
 
+        let allCalendars = eventStore.fridayAllEventCalendars()
         let todayPredicate = eventStore.predicateForEvents(
             withStart: Date(),
             end: endOfDay,
-            calendars: nil
+            calendars: allCalendars.isEmpty ? nil : allCalendars
         )
         let locationPredicate = eventStore.predicateForEvents(
             withStart: Date(),
             end: locationSearchEnd,
-            calendars: nil
+            calendars: allCalendars.isEmpty ? nil : allCalendars
         )
 
         let events = eventStore.events(matching: todayPredicate)
@@ -7043,8 +7045,7 @@ private final class CalendarPanelReader {
                 throw HomePanelDataError.invalidDateRange
             }
 
-            let visibleCalendars = eventStore.calendars(for: .event)
-                .filter { $0.allowsContentModifications || $0.type == .subscription || $0.type == .calDAV || $0.type == .local || $0.type == .exchange }
+            let visibleCalendars = eventStore.fridayAllEventCalendars()
 
             let todayPredicate = eventStore.predicateForEvents(
                 withStart: startOfToday,
@@ -7114,6 +7115,20 @@ private final class CalendarPanelReader {
         }
 
         return nil
+    }
+}
+
+nonisolated private extension EKEventStore {
+    func fridayAllEventCalendars() -> [EKCalendar] {
+        let directCalendars = calendars(for: .event)
+        let sourceCalendars = sources.flatMap { source in
+            Array(source.calendars(for: .event))
+        }
+
+        var seenCalendarIDs = Set<String>()
+        return (directCalendars + sourceCalendars).filter { calendar in
+            seenCalendarIDs.insert(calendar.calendarIdentifier).inserted
+        }
     }
 }
 

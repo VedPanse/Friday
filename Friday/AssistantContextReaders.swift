@@ -24,6 +24,7 @@ final class EventKitCalendarContextReader: CalendarContextReading, @unchecked Se
         try await Task.detached(priority: .userInitiated) {
             let eventStore = EKEventStore()
             try await Self.requestCalendarAccessIfNeeded(using: eventStore)
+            eventStore.refreshSourcesIfNecessary()
 
             let calendar = Calendar.current
             let startOfToday = calendar.startOfDay(for: now)
@@ -34,8 +35,10 @@ final class EventKitCalendarContextReader: CalendarContextReading, @unchecked Se
                 throw AssistantContextError.invalidDateRange
             }
 
-            let todayPredicate = eventStore.predicateForEvents(withStart: now, end: startOfTomorrow, calendars: nil)
-            let weekPredicate = eventStore.predicateForEvents(withStart: now, end: endOfWeek, calendars: nil)
+            let allCalendars = eventStore.fridayAllEventCalendars()
+            let queryCalendars = allCalendars.isEmpty ? nil : allCalendars
+            let todayPredicate = eventStore.predicateForEvents(withStart: now, end: startOfTomorrow, calendars: queryCalendars)
+            let weekPredicate = eventStore.predicateForEvents(withStart: now, end: endOfWeek, calendars: queryCalendars)
 
             let eventsToday = eventStore.events(matching: todayPredicate)
                 .map { CalendarEvent(event: $0) }
@@ -76,6 +79,20 @@ final class EventKitCalendarContextReader: CalendarContextReading, @unchecked Se
                     continuation.resume(returning: isGranted)
                 }
             }
+        }
+    }
+}
+
+nonisolated private extension EKEventStore {
+    func fridayAllEventCalendars() -> [EKCalendar] {
+        let directCalendars = calendars(for: .event)
+        let sourceCalendars = sources.flatMap { source in
+            Array(source.calendars(for: .event))
+        }
+
+        var seenCalendarIDs = Set<String>()
+        return (directCalendars + sourceCalendars).filter { calendar in
+            seenCalendarIDs.insert(calendar.calendarIdentifier).inserted
         }
     }
 }
