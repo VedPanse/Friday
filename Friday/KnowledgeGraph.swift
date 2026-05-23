@@ -364,11 +364,11 @@ private struct KnowledgeGraphOpenAIClient {
               "topics": [
                 {
                   "label": "Subtopic name",
-                  "description": "One sentence about why this subtopic matters.",
+                  "description": "About 20 words explaining why this subtopic matters and what the learner should understand.",
                   "children": [
                     {
                       "label": "Concept name",
-                      "description": "One sentence explanation.",
+                      "description": "About 20 words explaining the concept in practical learning terms.",
                       "children": []
                     }
                   ]
@@ -378,6 +378,7 @@ private struct KnowledgeGraphOpenAIClient {
             Non-leaf nodes represent topics or subtopics and must have children.
             Leaf nodes represent concepts and must use "children": [].
             The top-level array may have multiple subtopics, but there must not be multiple root topics.
+            Every description should be roughly 20 words long.
             Keep labels short and descriptions practical.
             """,
             "input": [
@@ -419,7 +420,7 @@ private struct KnowledgeGraphOpenAIClient {
 
         let rootDescription = generatedTopics.count == 1 && labelsMatch(generatedTopics[0].label, rootTopic)
             ? generatedTopics[0].description
-            : "A learning plan for \(rootTopic)."
+            : "A focused learning map for \(rootTopic), organized from core subtopics into practical concepts you should understand and practice."
         let rootChildren = generatedTopics.count == 1 && labelsMatch(generatedTopics[0].label, rootTopic)
             ? generatedTopics[0].children
             : generatedTopics
@@ -1223,6 +1224,11 @@ private struct KnowledgeGraphNodeDetailsIsland: View {
 
 
             if node.kind == .topic {
+                Rectangle()
+                    .fill(Color.white.opacity(0.16))
+                    .frame(height: 1)
+                    .padding(.vertical, 2)
+
                 ForEach(relatedNodes) { relatedNode in
                     HStack {
                         if (relatedNode.node.done) {
